@@ -2,15 +2,17 @@
 """
 SHIR — System for Hybrid Image Reconstruction — entry point.
 
-Run this script from a Linux/WSL terminal where BART is installed:
+Run from a terminal with the environment installed (Linux / WSL / macOS):
 
-    cd /mnt/c/<path>/AnalyzeMRIDataApp
+    cd <path>/AnalyzeMRIDataApp
     python app.py
 
 Requirements
 ------------
-  pip install PyQt5 matplotlib numpy scipy sigpy pygrappa
-  apt install bart          (or build from source)
+  pip install -r requirements.txt      # core (see requirements.txt)
+  # BART is optional — without it the built-in sigpy engine is used
+  # automatically; install it for exact numerics (native on Linux/macOS,
+  # via WSL on Windows). See README.md for details.
 """
 
 import os

@@ -76,9 +76,10 @@ app.py
 pip install -r requirements.txt
 ```
 
-Key packages: `PyQt5`, `numpy`, `scipy`, `matplotlib`, `pygrappa`, `twixtools`, `sigpy`,
-`mri-nufft`, `finufft`, `scikit-image`, `numba`, `pillow`.  
-See [requirements.txt](requirements.txt) for pinned versions.
+Key packages: `PyQt5`, `numpy`, `scipy`, `matplotlib`, `sigpy`, `pygrappa`,
+`twixtools`, `scikit-image` (`numba` comes in via sigpy).  
+See [requirements.txt](requirements.txt) for pinned versions and
+[requirements-dev.txt](requirements-dev.txt) for the test/build tools.
 
 ### 2. BART (Berkeley Advanced Reconstruction Toolbox) — *optional*
 
@@ -117,9 +118,10 @@ python app.py
 ## Usage Walkthrough
 
 ### 1. Open a scan folder
-Click **Open Folder** (or **Add Folder**) in the toolbar or folder panel and select:
+Click **Open Folder** (or **Add Folder**) in the toolbar or folder panel and select any of:
+- A parent scan folder containing a `dat_files/` sub-folder (e.g. `SE_1mm/`),
 - A `dat_files/` folder directly, **or**
-- Its parent scan folder (e.g. `SE_1mm/`).
+- Any folder containing loose `.dat` files (trajectory JSONs are looked up alongside them).
 
 The app auto-detects each `.dat` file type from the filename stem:
 
@@ -132,9 +134,8 @@ The app auto-detects each `.dat` file type from the filename stem:
 | Unknown | anything else | Grey — reconstructed with the **generic fallback** (below) |
 
 ### 2. Select files to process
-- Check/uncheck folders, scan types, or individual files in the tree.
-- For **Band** files, use the numbered band-index checkboxes (0–15) at the bottom of the folder
-  panel to select which bands to reconstruct.
+- Check/uncheck folders, scan types, or individual files in the tree; each **Band** file
+  (`band_se_0` … `band_se_15`) is its own checkable tree item.
 - Use **Select All** / **Clear All** for bulk selection.
 
 ### 3. Configure parameters
@@ -333,8 +334,8 @@ Outputs (per result tab — 3 × 3 grid):
 | Equispaced Recon | ESPIRiT maps | 2 | Equispaced (ESPIRiT) | Number of ESPIRiT map sets (BART multi-map; sigpy uses 1) |
 | Equispaced Recon | ACS lines | 24 | Equispaced | Auto-calibration signal lines in centre of k-space |
 | Equispaced Recon | R-factor | 4 | Equispaced | Phase-encode acceleration factor |
-| Equispaced Recon | Kernel size | 3 × 7 | Equispaced (GRAPPA) | GRAPPA convolution kernel (rows × cols) |
-| Equispaced Recon | λ GRAPPA | 0.1 | Equispaced (GRAPPA) | Tikhonov regularisation weight for pygrappa |
+| Equispaced Recon | Kernel size | 5 × 5 | Equispaced (GRAPPA) | GRAPPA convolution kernel (rows × cols; odd values recommended) |
+| Equispaced Recon | λ GRAPPA | 0.01 | Equispaced (GRAPPA) | Tikhonov regularisation weight for pygrappa |
 | Equispaced Recon | λ CS-SENSE | 0.01 | Equispaced (CS-SENSE) | L1 wavelet regularisation weight for BART PICS |
 | Equispaced Recon | SENSE iterations | 100 | Equispaced (SENSE/CS-SENSE) | BART PICS CG iterations |
 | Poisson Disc Recon | Recon mode | Zero-Fill | Poisson | Zero-Fill (RSS) or CS PICS (L1-wavelet) |
@@ -344,12 +345,13 @@ Outputs (per result tab — 3 × 3 grid):
 | Undersampling Simulator | R (acceleration) | 4.0 | Simulator | Target acceleration factor |
 | Undersampling Simulator | ACS lines | 24 | Simulator | Fully-sampled lines at k-space centre |
 | Undersampling Simulator | Power decay | 1.0 | Simulator (VD) | PDF exponent: 1=linear, 2=parabolic (VD only) |
-| Undersampling Simulator | Recon method | None | Simulator | None / GRAPPA / Pure SENSE / CS-SENSE |
-| Undersampling Simulator | Kernel size | 3 × 7 | Simulator (GRAPPA) | GRAPPA convolution kernel |
-| Undersampling Simulator | λ GRAPPA | 0.1 | Simulator (GRAPPA) | Tikhonov regularisation weight |
+| Undersampling Simulator | Random seed | Random | Simulator (VD) | Seed for VD line selection; a fixed value makes the mask reproducible (VD only) |
+| Undersampling Simulator | Recon method | None | Simulator | None / GRAPPA / gGRAPPA / Pure SENSE / CS-SENSE / ESPIRiT ± L1/L2/TV |
+| Undersampling Simulator | Kernel size | 5 × 5 | Simulator (GRAPPA) | GRAPPA convolution kernel |
+| Undersampling Simulator | λ GRAPPA | 0.01 | Simulator (GRAPPA) | Tikhonov regularisation weight |
 | Undersampling Simulator | Iterations | 100 | Simulator (SENSE/CS-SENSE) | BART PICS CG iterations |
 | Undersampling Simulator | λ CS-SENSE | 0.01 | Simulator (CS-SENSE) | L1 wavelet regularisation weight |
-| Output | Save directory | `results/` | All | Default directory for PDF reports and `.npy` image files; also the starting folder for the **Save output** dialog |
+| Output | Save directory | `~/Documents/SHIR` | All | Default directory for PDF reports and `.npy` image files; also the starting folder for the **Save output** dialog. Created on first save; verified writable at run start |
 | Output | Generate PDF report | — | All | Include a PDF report when saving (auto-saved after all jobs complete, and saved by **Save output**) |
 | Output | Save combined images (.npy) | — | All | Include combined images as `.npy` when saving (auto-saved after all jobs complete, and saved by **Save output**) |
 | Output | 💾 Save output | — | All | Save the checked outputs per scan folder; prompts for a location/name (pre-filled from the folder), works any time after a run |
@@ -367,7 +369,8 @@ SE_1mm/                              ← parent scan folder
 │   ├── fully_sampled.dat
 │   ├── equispaced_R4_acs24.dat      ← R factor read from the "_R4" in the name
 │   └── PoissonDisc.dat
-├── Bands.json                       ← 16 rotated-band trajectories (keys "0"–"15")
+├── Bands.json                       ← rotated-band trajectories, keyed by index
+│                                       ("0", "1", … — typically 16, but any count)
 ├── PoissonDisc.json                 ← Poisson-disc 2D trajectory
 └── Undersampled4equispaced.json     ← <R>× equispaced + ACS PE mask (R matches the .dat)
 ```
@@ -393,8 +396,12 @@ AnalyzeMRIDataApp/
 ├── app.py                     ← entry point; splash screen, QApplication, MainWindow
 ├── requirements.txt
 ├── processing/
+│   ├── constants.py           ← scan-type + method wire constants, METHOD_LABELS,
+│   │                             method_label(), JobAborted (Stop control-flow)
+│   ├── imaging.py             ← shared ifft2c/fft2c/rss/norm01 + metrics_vs_reference
 │   ├── utils.py               ← ScanType enum, BART subprocess wrapper (WSL bridge on
-│   │                             Windows), CFL I/O, trajectory loaders, BartTempDir
+│   │                             Windows), CFL I/O, trajectory loaders, BartTempDir,
+│   │                             ensure_twix_importable()
 │   ├── recon_backend.py       ← BART⇄sigpy backend abstraction: bart_available(),
 │   │                             espirit_maps(), pics(), nufft_adjoint_to_cartesian()
 │   ├── band_recon.py          ← reconstruct_band()         — NUFFT + ESPIRiT + SENSE
@@ -411,16 +418,49 @@ AnalyzeMRIDataApp/
 ├── resources.py               ← resource_path(): dev + frozen (PyInstaller) asset paths
 ├── version.py                 ← __version__ (title bar / About / build banner)
 ├── Graphics/                  ← Intro.png (splash) + logo.png (window / exe icon)
+├── tests/                    ← pytest suite (see Testing below)
 └── ui/
     ├── main_window.py         ← MainWindow + ReconWorker (background QThread)
-    ├── folder_panel.py        ← FolderPanel + BandCheckGroup; simulate_requested signal
+    ├── folder_panel.py        ← FolderPanel (scan tree); run/simulate signals
     ├── params_panel.py        ← ParamsPanel; exposes get_params() → dict
     ├── results_viewer.py      ← ResultsViewer (tabbed matplotlib canvases)
     └── report_generator.py    ← PDF multi-page report export
 ```
 
 Each `reconstruct_*()` function accepts a `progress_cb` callback so `ReconWorker` can emit live
-log messages without blocking the GUI thread.
+log messages without blocking the GUI thread. **Stop** cancels the queue and interrupts the
+running job at its next pipeline stage (the callback raises `JobAborted`); an in-flight BART or
+sigpy stage finishes first.
+
+---
+
+## Testing
+
+A pytest suite lives in [`tests/`](tests/). Install the dev tools and run it:
+
+```bash
+pip install -r requirements-dev.txt
+pytest                          # from AnalyzeMRIDataApp/
+```
+
+Markers (registered in [`pytest.ini`](pytest.ini)) gate the environment-specific tests:
+
+| Marker | Needs | Skipped automatically when… |
+|---|---|---|
+| *(unmarked)* | numpy/scipy/sigpy/pygrappa | — always run (headless, synthetic phantoms) |
+| `bart` | BART on `PATH` | BART is absent |
+| `gui` | a Qt platform (pytest-qt) | runs offscreen; needs pytest-qt |
+| `realdata` | the local sample scan folder | the folder is not present |
+
+```bash
+pytest -m "not bart and not realdata"    # CI-friendly subset (no BART, no data)
+pytest -m realdata                        # end-to-end on real .dat scans
+```
+
+Tests run headless (`QT_QPA_PLATFORM=offscreen`, matplotlib `Agg`); Qt settings are
+redirected to a temp dir so they never touch your real preferences. The synthetic
+tests use a Shepp-Logan phantom with birdcage coil sensitivities and monkeypatch the
+TWIX reader, so no scanner data is required for the bulk of the suite.
 
 ---
 
@@ -429,8 +469,10 @@ log messages without blocking the GUI thread.
 - **BART is optional.** With the Recon engine on *Force sigpy* (or *Auto* with no BART), all
   methods run on the built-in sigpy engine — results are close to BART's but not identical, and
   sigpy is CPU-only (slower). *Force BART* requires BART on `PATH` (Linux/macOS) or via WSL
-  (Windows). The standalone builds exclude **torch**, so the torch-based **gGRAPPA** simulator
-  method is unavailable there.
+  (Windows). If BART is installed somewhere off `PATH`, point SHIR at it with the
+  **`MRI_BART_BIN`** environment variable (honoured on every platform; on Windows it names the
+  binary *inside* WSL). The standalone builds exclude **torch**, so the torch-based **gGRAPPA**
+  simulator method is unavailable there.
 - **TSE folders** (`TSE_1mm`, `TSE_3mm`) contain Band data only; Fully-Sampled, Equispaced and
   Poisson-Disc scan types will not appear for these folders.
 - Intermediate BART `.cfl` / `.hdr` files are written to a **temporary directory** and deleted
@@ -445,7 +487,8 @@ log messages without blocking the GUI thread.
   entirely from the simulator parameters.
 - The VD mask uses **numpy weighted random sampling** in place of the MATLAB Poisson-disc
   algorithm; the probability distribution matches faithfully but individual sample positions
-  will differ from MATLAB unless an explicit `rng_seed` is provided (no GUI control currently).
+  will differ from MATLAB. Set the simulator's **Random seed** field to a fixed value for a
+  reproducible VD mask (leave it on *Random* for a fresh mask each run).
 
 ---
 

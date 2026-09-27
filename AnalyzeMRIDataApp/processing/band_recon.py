@@ -44,7 +44,8 @@ def reconstruct_band(
     bands_json_path : str
         Path to Bands.json for this scan folder.
     band_idx : int
-        Which band index (0–15) to reconstruct.
+        Which band index to reconstruct — the key looked up in Bands.json.
+        Any index present in the JSON is valid (not limited to 0–15).
     grid_size : int
         BART NUFFT oversampled grid size (default 512).
     calib_width : int

@@ -50,7 +50,7 @@ _PATTERNS = [
     (ScanType.FULLY_SAMPLED, re.compile(r"fully_sampled",  re.IGNORECASE)),
     (ScanType.EQUISPACED,    re.compile(r"equispaced",     re.IGNORECASE)),
     (ScanType.POISSON,       re.compile(r"poisson",        re.IGNORECASE)),
-    # band_se_0 … band_se_15  or  band_tse_0 … band_tse_15
+    # band_se_<n> / band_tse_<n> — any non-negative index (not limited to 0–15)
     (ScanType.BAND,          re.compile(r"band_(t?se)_\d+$", re.IGNORECASE)),
 ]
 
