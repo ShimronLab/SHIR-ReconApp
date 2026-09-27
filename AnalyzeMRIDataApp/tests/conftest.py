@@ -95,20 +95,33 @@ def phantom_kspace():
     }
 
 
+def install_fake_twix_reader(monkeypatch, kspace):
+    """
+    Patch read_siemens_scans.twix_reading.read_raw_twix_data.
+
+    ``kspace`` is either a single array (returned for every path) or a dict of
+    {filename_substring: array} matched against the requested path (so e.g. an
+    equispaced scan and its fully-sampled reference return different data).
+    """
+    import read_siemens_scans.twix_reading as twix_reading
+
+    def _fake(path, fix_oversampling=False, **kwargs):
+        if isinstance(kspace, dict):
+            for key, arr in kspace.items():
+                if key in str(path):
+                    return arr.copy(), None
+            raise FileNotFoundError(f"fake reader: no entry matches {path!r}")
+        return kspace.copy(), None
+
+    monkeypatch.setattr(twix_reading, "read_raw_twix_data", _fake)
+    return _fake
+
+
 @pytest.fixture
 def fake_twix_reader(monkeypatch):
-    """
-    Factory: fake_twix_reader(kspace_reader_layout) patches
-    read_siemens_scans.twix_reading.read_raw_twix_data to return it.
-    """
-    def _install(kspace: np.ndarray):
-        import read_siemens_scans.twix_reading as twix_reading
-
-        def _fake(path, fix_oversampling=False, **kwargs):
-            return kspace.copy(), None
-
-        monkeypatch.setattr(twix_reading, "read_raw_twix_data", _fake)
-        return _fake
+    """Factory: fake_twix_reader(kspace) — see install_fake_twix_reader."""
+    def _install(kspace):
+        return install_fake_twix_reader(monkeypatch, kspace)
 
     return _install
 

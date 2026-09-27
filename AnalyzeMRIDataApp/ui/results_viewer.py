@@ -12,7 +12,7 @@ import numpy as np
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT as NavToolbar
 from matplotlib.figure import Figure
-from PyQt5.QtCore import Qt
+from PyQt5.QtCore import Qt, pyqtSignal
 from PyQt5.QtWidgets import (
     QCheckBox,
     QDialog,
@@ -901,6 +901,10 @@ class ReconTab(QWidget):
             "under_ksp": None if und is None else np.asarray(und).copy(),
             "recon_ksp": None if rks is None else np.asarray(rks).copy(),
         }
+        # Shared with the result dict so exports can offer the untransformed
+        # reconstruction while Center/Crop toggles are active. Never mutated
+        # in place (the transforms always work on fresh .copy()s).
+        r["_pristine_recon"] = self._eq_base["recon"]
 
     def _toggle_eq_center(self) -> None:
         self._eq_center_on = self._btn_center.isChecked()
@@ -1023,6 +1027,9 @@ class ReconTab(QWidget):
         if self._eq_masked_on:
             active.append("masked")
         self._result["_eq_align_note"] = " + ".join(active) if active else None
+        # Center/Crop replace the image arrays in the result dict; flag it so
+        # exports can ask whether to save the modified or the raw recon.
+        self._result["_view_modified"] = bool(self._eq_center_on or self._eq_crop_on)
 
         self._draw()
 
@@ -1405,14 +1412,23 @@ class ReconTab(QWidget):
 
     # ─── All coils viewer ────────────────────────────────────────────────────
 
-    def show_all_coils(self) -> None:
-        """Open a standalone window with all per-coil images."""
+    def show_all_coils(self) -> bool:
+        """Open a standalone window with all per-coil images.
+
+        Returns False when this tab has no per-coil data (so the caller can
+        tell the user instead of silently doing nothing).
+        """
         arr = self._result.get("imgs_per_coil")
         if arr is None:
-            return
+            return False
         arr = np.squeeze(arr)
         if arr.ndim != 3:
-            return
+            return False
+        # Close the previous popout for this tab — pyplot-managed figures live
+        # in a global registry and would otherwise accumulate on every click.
+        prev = getattr(self, "_coil_fig", None)
+        if prev is not None:
+            plt.close(prev)
         nc = arr.shape[-1]
         ncols = int(np.ceil(np.sqrt(nc)))
         nrows = int(np.ceil(nc / ncols))
@@ -1426,7 +1442,12 @@ class ReconTab(QWidget):
         for c in range(nc, len(axes)):
             axes[c].axis("off")
         plt.tight_layout()
+        self._coil_fig = fig
+        fig.canvas.mpl_connect(
+            "close_event", lambda _e: setattr(self, "_coil_fig", None)
+        )
         plt.show()
+        return True
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1438,10 +1459,14 @@ class ResultsViewer(QTabWidget):
     Tabbed widget: each tab is a ReconTab for one reconstruction result.
     """
 
+    # Emitted with the result dict of a tab the user closed, so the owner
+    # (MainWindow) can drop it from its results list too.
+    result_closed = pyqtSignal(object)
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setTabsClosable(True)
-        self.tabCloseRequested.connect(self.removeTab)
+        self.tabCloseRequested.connect(self._on_tab_close_requested)
         self.setMovable(True)
 
     def add_result(self, result: Dict[str, Any], title: str) -> None:
@@ -1450,10 +1475,20 @@ class ResultsViewer(QTabWidget):
         self.addTab(tab, title[:40])   # truncate long labels
         self.setCurrentIndex(self.count() - 1)
 
+    def _on_tab_close_requested(self, index: int) -> None:
+        tab = self.widget(index)
+        self.removeTab(index)
+        if isinstance(tab, ReconTab):
+            self.result_closed.emit(tab._result)
+            tab.deleteLater()   # removeTab alone would leak the widget + Figure
+
     def clear_all(self) -> None:
         """Remove all tabs."""
         while self.count() > 0:
+            tab = self.widget(0)
             self.removeTab(0)
+            if tab is not None:
+                tab.deleteLater()
 
     def get_display_settings_map(self) -> dict:
         """Return {tab_title: display_settings_dict} for all open ReconTabs."""
@@ -1464,8 +1499,9 @@ class ResultsViewer(QTabWidget):
                 result[tab._title] = tab.get_display_settings()
         return result
 
-    def show_all_coils_current(self) -> None:
-        """Trigger all-coils view for the currently visible tab."""
+    def show_all_coils_current(self) -> bool:
+        """All-coils view for the visible tab; False when there is nothing to show."""
         tab = self.currentWidget()
         if isinstance(tab, ReconTab):
-            tab.show_all_coils()
+            return tab.show_all_coils()
+        return False

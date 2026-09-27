@@ -214,7 +214,9 @@ def _bart_command(args) -> list:
         wsl_exe = os.environ.get("MRI_WSL_EXE", "wsl.exe")
         bart_bin = os.environ.get("MRI_BART_BIN", "bart")
         return [wsl_exe, bart_bin, *translated]
-    return ["bart", *str_args]
+    # MRI_BART_BIN is honoured on every platform, so a BART built outside PATH
+    # (e.g. ~/bart/bart) can be used without shell profile changes.
+    return [os.environ.get("MRI_BART_BIN", "bart"), *str_args]
 
 
 def run_bart(*args, check: bool = True) -> str:

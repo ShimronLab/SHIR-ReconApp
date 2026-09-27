@@ -21,6 +21,7 @@ Worker thread
 import os
 import sys
 import threading
+import traceback
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -49,6 +50,7 @@ from .folder_panel   import FolderPanel
 from .params_panel   import ParamsPanel
 from .results_viewer import ResultsViewer
 from .report_generator import generate_pdf
+from processing.constants import JobAborted
 from resources import resource_path
 from version import __version__
 
@@ -92,6 +94,8 @@ class ReconWorker(QObject):
         self._slice_choice = None
         self.slice_selection_needed.emit(n_slices)
         self._slice_event.wait()          # releases main-thread event loop
+        if self._abort:                   # Stop pressed while waiting → cancel,
+            raise JobAborted()            # don't reconstruct the middle slice
         return self._slice_choice if self._slice_choice is not None else (n_slices // 2)
 
     def set_mask_choice(self, choice: str) -> None:
@@ -105,6 +109,8 @@ class ReconWorker(QObject):
         self._mask_choice = None
         self.mask_fallback_needed.emit()
         self._mask_event.wait()           # releases main-thread event loop
+        if self._abort:
+            raise JobAborted()
         return self._mask_choice if self._mask_choice is not None else "analytical"
 
     def run(self) -> None:
@@ -113,6 +119,11 @@ class ReconWorker(QObject):
         stype  = job.get("scan_type", "UNKNOWN")
 
         def cb(msg: str) -> None:
+            # Stop support: every recon function reports progress between its
+            # stages through this callback, so raising here cancels the job at
+            # the next stage boundary (an in-flight BART/sigpy stage finishes).
+            if self._abort:
+                raise JobAborted()
             self.progress_msg.emit(msg)
 
         # Slice callback: when this job targets a specific slice (multi-slice
@@ -293,8 +304,13 @@ class ReconWorker(QObject):
             result["folder_key"] = job.get("folder_key", "")
             self.result_ready.emit(result)
 
+        except JobAborted:
+            self.progress_msg.emit("[ABORTED] Job cancelled by user.")
+
         except Exception as exc:
-            self.error_signal.emit(f"[ERROR] {type(exc).__name__}: {exc}")
+            self.error_signal.emit(
+                f"[ERROR] {type(exc).__name__}: {exc}\n{traceback.format_exc()}"
+            )
 
         finally:
             self.finished.emit()
@@ -348,11 +364,13 @@ class MainWindow(QMainWindow):
             pass   # missing graphics must never block launch
         self.resize(1400, 860)
 
-        self._workers: List[QThread] = []
         self._job_queue: List[Dict]  = []
         self._params: Dict           = {}
         self._results: List[Dict]    = []   # accumulate for PDF
+        self._failed_jobs: List[str] = []   # labels of jobs that errored this run
+        self._jobs_total             = 0
         self._active_thread: Optional[QThread] = None
+        self._active_worker: Optional[ReconWorker] = None
 
         self._build_ui()
         self._build_toolbar()
@@ -404,6 +422,7 @@ class MainWindow(QMainWindow):
         self._folder_panel.run_requested.connect(self._on_run_requested)
         self._folder_panel.simulate_requested.connect(self._on_simulate_requested)
         self._params_panel.save_output_requested.connect(self._on_save_output)
+        self._results_viewer.result_closed.connect(self._on_result_closed)
 
     def _build_toolbar(self) -> None:
         tb = QToolBar("Main")
@@ -440,7 +459,7 @@ class MainWindow(QMainWindow):
 
         act_coils = QAction("🔬  All Coils", self)
         act_coils.setToolTip("Open all-coils viewer for current tab")
-        act_coils.triggered.connect(self._results_viewer.show_all_coils_current)
+        act_coils.triggered.connect(self._on_all_coils)
         tb.addAction(act_coils)
 
         act_clear = QAction("🗑  Clear Tabs", self)
@@ -472,6 +491,8 @@ class MainWindow(QMainWindow):
         jobs = _attach_references(jobs)
 
         self._job_queue = list(jobs)
+        self._failed_jobs = []
+        self._jobs_total = len(jobs)
         self._log_msg(f"Queued {len(jobs)} job(s). Starting…")
         self._run_next_job()
 
@@ -485,6 +506,8 @@ class MainWindow(QMainWindow):
         self._params = params
 
         self._job_queue = list(jobs)
+        self._failed_jobs = []
+        self._jobs_total = len(jobs)
         self._log_msg(f"[Simulate] Queued {len(jobs)} job(s). Starting…")
         self._run_next_job()
 
@@ -494,11 +517,15 @@ class MainWindow(QMainWindow):
             return
 
         job = self._job_queue.pop(0)
-        self._log_msg(f"\n── {_make_label(job)} ──")
+        self._current_job_label = _make_label(job)
+        job_no = self._jobs_total - len(self._job_queue)
+        self._log_msg(f"\n── [{job_no}/{self._jobs_total}] {self._current_job_label} ──")
         self._progress.setVisible(True)
         self._act_stop.setEnabled(True)
         self._act_run.setEnabled(False)
-        self._status_label.setText(f"Processing: {_make_label(job)}")
+        self._status_label.setText(
+            f"Job {job_no}/{self._jobs_total}: {self._current_job_label}"
+        )
 
         worker = ReconWorker(job, self._params)
         thread = QThread()
@@ -528,6 +555,11 @@ class MainWindow(QMainWindow):
         # Auto-save .npy if requested
         if self._params.get("save_npy"):
             self._save_npy(result)
+
+    def _on_result_closed(self, result: object) -> None:
+        """A tab was closed — drop its result so PDFs/.npy saves and memory
+        stay in sync with what is on screen."""
+        self._results = [r for r in self._results if r is not result]
 
     def _on_slice_selection_needed(self, n_slices: int) -> None:
         """Main-thread slot: show a dialog and send the selected slice back to the worker."""
@@ -569,28 +601,86 @@ class MainWindow(QMainWindow):
             self._active_worker.set_mask_choice(choice)
 
     def _on_worker_error(self, msg: str) -> None:
-        self._log_msg(msg)
+        self._failed_jobs.append(getattr(self, "_current_job_label", "?"))
+        self._log_msg(msg, error=True)
+        self._status_label.setText("Job failed — see log")
 
     def _on_all_jobs_done(self) -> None:
         self._progress.setVisible(False)
         self._act_stop.setEnabled(False)
         self._act_run.setEnabled(True)
-        self._status_label.setText(f"Done — {len(self._results)} result(s)")
-        self._log_msg("\n✓ All jobs complete.")
         # Clear references so the deleted C++ Qt objects are not accessed on the
         # next run (calling .isRunning() on a deleteLater'd QThread crashes the app).
         self._active_thread = None
         self._active_worker = None
+
+        if self._failed_jobs:
+            self._status_label.setText(
+                f"Done — {len(self._results)} result(s), "
+                f"{len(self._failed_jobs)} job(s) FAILED"
+            )
+            self._log_msg(
+                f"\n⚠ Finished with {len(self._failed_jobs)} failed job(s).",
+                error=True,
+            )
+            QMessageBox.warning(
+                self, "Some jobs failed",
+                f"{len(self._failed_jobs)} of {self._jobs_total} job(s) failed:\n\n"
+                + "\n".join(f"• {lbl}" for lbl in self._failed_jobs)
+                + "\n\nSee the log console for details.",
+            )
+        else:
+            self._status_label.setText(f"Done — {len(self._results)} result(s)")
+            self._log_msg("\n✓ All jobs complete.")
 
         if self._params.get("gen_pdf") and self._results:
             self._generate_and_save_pdf()
 
     def _on_stop(self) -> None:
         self._job_queue.clear()
-        if hasattr(self, "_active_worker") and self._active_worker is not None:
+        if self._active_worker is not None:
             self._active_worker.abort()
-        self._log_msg("⚠ Stop requested — waiting for current job to finish.")
+        self._log_msg("⚠ Stop requested — cancelling at the next pipeline stage.")
         self._act_stop.setEnabled(False)
+
+    def closeEvent(self, event) -> None:
+        """Shut down cleanly: never destroy a QThread that is still running."""
+        thread = self._active_thread
+        if thread is None or not thread.isRunning():
+            event.accept()
+            return
+
+        reply = QMessageBox.question(
+            self, "Reconstruction running",
+            "A reconstruction is still running.\nAbort it and quit?",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No,
+        )
+        if reply != QMessageBox.Yes:
+            event.ignore()
+            return
+
+        self._job_queue.clear()
+        try:
+            # Don't chain into the next job while shutting down.
+            thread.finished.disconnect(self._run_next_job)
+        except TypeError:
+            pass
+        if self._active_worker is not None:
+            self._active_worker.abort()   # also unblocks slice/mask dialog waits
+        thread.quit()
+        if not thread.wait(15000):
+            # An in-flight BART/sigpy stage can take a while; give the user the
+            # choice instead of hanging forever or crashing Qt.
+            force = QMessageBox.question(
+                self, "Still running",
+                "The current reconstruction stage has not finished yet.\n"
+                "Force quit anyway? (Temporary files may be left behind.)",
+                QMessageBox.Yes | QMessageBox.No, QMessageBox.No,
+            )
+            if force != QMessageBox.Yes:
+                event.ignore()
+                return
+        event.accept()
 
     # ─── Output saving ─────────────────────────────────────────────────────────
 
@@ -664,6 +754,29 @@ class MainWindow(QMainWindow):
         if gen_pdf:
             self._inject_display_settings()
 
+        # View toggles (Center K-space / Crop to BBox) replace the displayed
+        # arrays. The PDF deliberately matches the screen; for .npy exports let
+        # the user choose between the displayed and the raw reconstruction.
+        use_raw_npy = False
+        if save_npy and any(r.get("_view_modified") for r in self._results):
+            box = QMessageBox(self)
+            box.setIcon(QMessageBox.Question)
+            box.setWindowTitle("Save .npy — modified view active")
+            box.setText(
+                "Some result tabs have active view transforms\n"
+                "(Center K-space / Crop to BBox).\n\n"
+                "Save the .npy images as displayed (modified) or as the\n"
+                "original raw reconstruction?"
+            )
+            btn_mod = box.addButton("As displayed (modified)", QMessageBox.AcceptRole)
+            btn_raw = box.addButton("Raw reconstruction", QMessageBox.RejectRole)
+            box.setDefaultButton(btn_mod)
+            box.exec_()
+            use_raw_npy = box.clickedButton() is btn_raw
+            self._log_msg(
+                f"  .npy export: {'raw reconstruction' if use_raw_npy else 'as displayed'}"
+            )
+
         saved: List[str] = []
         for fkey, group_results in self._group_by_folder(self._results).items():
             chosen, _ = QFileDialog.getSaveFileName(
@@ -695,7 +808,11 @@ class MainWindow(QMainWindow):
             if save_npy:
                 multi = len(group_results) > 1
                 for r in group_results:
-                    combined = self._pick_combined(r)
+                    if use_raw_npy and r.get("_view_modified") \
+                            and r.get("_pristine_recon") is not None:
+                        combined = r["_pristine_recon"]
+                    else:
+                        combined = self._pick_combined(r)
                     if combined is None:
                         continue
                     if multi:
@@ -731,23 +848,41 @@ class MainWindow(QMainWindow):
         return f"{label} ({n})"
 
     def _save_npy(self, result: Dict) -> None:
-        save_dir = Path(self._params.get("save_dir", "."))
-        save_dir.mkdir(parents=True, exist_ok=True)
-        label = result.get("label", "result").replace(" ", "_").replace("—", "-")
-        combined = self._pick_combined(result)
-        if combined is not None:
-            npy_path = save_dir / f"{label}.npy"
-            np.save(str(npy_path), np.squeeze(combined))
-            self._log_msg(f"  💾 .npy saved: {npy_path}")
+        try:
+            save_dir = Path(self._params.get("save_dir", "."))
+            save_dir.mkdir(parents=True, exist_ok=True)
+            label = result.get("label", "result").replace(" ", "_").replace("—", "-")
+            combined = self._pick_combined(result)
+            if combined is not None:
+                npy_path = save_dir / f"{label}.npy"
+                np.save(str(npy_path), np.squeeze(combined))
+                self._log_msg(f"  💾 .npy saved: {npy_path}")
+        except OSError as exc:
+            # A bad/unwritable save dir must not kill the run; warn once.
+            self._log_msg(f"  ⚠ .npy auto-save failed: {exc}", error=True)
+            if not getattr(self, "_npy_warned", False):
+                self._npy_warned = True
+                self._log_msg(
+                    "  ⚠ Check the Save directory in the Output panel.", error=True
+                )
+
+    def _on_all_coils(self) -> None:
+        if not self._results_viewer.show_all_coils_current():
+            self._status_label.setText("No per-coil images on the current tab")
 
     def _on_clear_results(self) -> None:
         self._results_viewer.clear_all()
         self._results.clear()
         self._log_msg("All result tabs cleared.")
 
-    def _log_msg(self, msg: str) -> None:
+    def _log_msg(self, msg: str, error: bool = False) -> None:
         self._log.moveCursor(QTextCursor.End)
-        self._log.insertPlainText(msg + "\n")
+        if error:
+            import html
+            body = html.escape(msg).replace("\n", "<br>")
+            self._log.insertHtml(f'<span style="color:#c0392b;">{body}</span><br>')
+        else:
+            self._log.insertPlainText(msg + "\n")
         self._log.moveCursor(QTextCursor.End)
 
     def _on_about(self) -> None:
