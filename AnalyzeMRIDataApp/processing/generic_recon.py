@@ -30,7 +30,6 @@ Every dict gains "recon_path": "nufft" | "cs" | "cartesian".
 """
 
 import os
-import sys
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional
 
@@ -47,11 +46,7 @@ from .utils import (
 )
 
 
-def _add_twix_path() -> None:
-    root = Path(__file__).resolve().parent.parent.parent
-    twix_str = str(root / "read_siemens_scans")
-    if twix_str not in sys.path:
-        sys.path.insert(0, twix_str)
+from .utils import ensure_twix_importable as _add_twix_path
 
 
 def _read_slice_coilfirst(

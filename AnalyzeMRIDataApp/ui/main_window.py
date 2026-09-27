@@ -289,7 +289,8 @@ class ReconWorker(QObject):
                 suffix_map = {"nufft": " (NUFFT RSS)", "cs": " (CS)",
                               "cartesian": " (RSS)"}
                 result["label"] += suffix_map.get(result.get("recon_path"), " (RSS)")
-            result["dat_path"]  = job["dat_path"]
+            result["dat_path"]   = job["dat_path"]
+            result["folder_key"] = job.get("folder_key", "")
             self.result_ready.emit(result)
 
         except Exception as exc:
@@ -518,7 +519,8 @@ class MainWindow(QMainWindow):
         self._active_worker = worker
 
     def _on_result_ready(self, result: Dict) -> None:
-        label = result.get("label", "Result")
+        label = self._unique_label(result.get("label", "Result"))
+        result["label"] = label
         self._results.append(result)
         self._results_viewer.add_result(result, label)
         self._log_msg(f"  ✓  {label}")
@@ -714,6 +716,20 @@ class MainWindow(QMainWindow):
 
     # ─── Helpers ──────────────────────────────────────────────────────────────
 
+    def _unique_label(self, label: str) -> str:
+        """
+        Ensure the label is unique among current results, suffixing " (2)", " (3)"…
+        Duplicate labels would collide in the per-tab display-settings map and
+        overwrite each other's auto-saved .npy files.
+        """
+        existing = {r.get("label") for r in self._results}
+        if label not in existing:
+            return label
+        n = 2
+        while f"{label} ({n})" in existing:
+            n += 1
+        return f"{label} ({n})"
+
     def _save_npy(self, result: Dict) -> None:
         save_dir = Path(self._params.get("save_dir", "."))
         save_dir.mkdir(parents=True, exist_ok=True)
@@ -799,13 +815,15 @@ def _attach_references(jobs: List[Dict]) -> List[Dict]:
         dat_dir = Path(j["dat_path"]).parent
         dat_dir_str = str(dat_dir)
 
+        # sorted() keeps the pick deterministic when several candidates exist
+        # (bare glob order is filesystem-dependent).
         if dat_dir_str not in fs_map:
-            for f in dat_dir.glob("*fully_sampled*.dat"):
-                fs_map[dat_dir_str] = str(f)
-                break
+            candidates = sorted(dat_dir.glob("*fully_sampled*.dat"))
+            if candidates:
+                fs_map[dat_dir_str] = str(candidates[0])
 
         if dat_dir_str not in siemens_se_map:
-            for f in dat_dir.glob("*.dat"):
+            for f in sorted(dat_dir.glob("*.dat")):
                 if _SIEMENS_SE.search(f.name) and not _GRAPPA_SE_EXCLUSION.search(f.name):
                     siemens_se_map[dat_dir_str] = str(f)
                     break

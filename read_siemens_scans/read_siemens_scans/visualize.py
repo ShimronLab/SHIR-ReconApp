@@ -1,4 +1,4 @@
-import matplotlib as plt
+import matplotlib.pyplot as plt
 from matplotlib.widgets import Slider
 from matplotlib.axes import Axes
 

@@ -243,13 +243,19 @@ class ParamsPanel(QWidget):
         self.spin_acs.setRange(4, 128)
         self.spin_acs.setSingleStep(4)
         self.spin_acs.setValue(24)
-        self.spin_acs.setToolTip("Number of auto-calibration signal (ACS) lines (GRAPPA only)")
+        self.spin_acs.setToolTip(
+            "Number of auto-calibration signal (ACS) lines at the k-space centre.\n"
+            "Used to build the analytical PE mask for every equispaced method."
+        )
         form_grappa.addRow("ACS lines:", self.spin_acs)
 
         self.spin_r = QSpinBox()
         self.spin_r.setRange(2, 8)
         self.spin_r.setValue(4)
-        self.spin_r.setToolTip("Under-sampling acceleration factor (used for fallback mask)")
+        self.spin_r.setToolTip(
+            "Under-sampling acceleration factor for the analytical PE mask.\n"
+            "Auto-overridden when the filename contains _R<n> (e.g. equispaced_R4)."
+        )
         form_grappa.addRow("R-factor:", self.spin_r)
 
         kr_widget = QWidget()
@@ -569,9 +575,9 @@ class ParamsPanel(QWidget):
         m = self.combo_equi_method.currentData()
         is_grappa   = (m in ("grappa", "grappa_sense"))
         is_espirit  = (m in ("espirit", "espirit_l1", "espirit_l2", "espirit_tv", "espirit_l1wav"))
+        # ACS lines and R-factor build the analytical PE mask for EVERY
+        # equispaced method (not just GRAPPA) — keep them enabled always.
         # GRAPPA-only widgets
-        self.spin_acs.setEnabled(is_grappa)
-        self.spin_r.setEnabled(is_grappa)
         self.spin_k_rows.setEnabled(is_grappa)
         self.spin_k_cols.setEnabled(is_grappa)
         self.dspin_grappa_lambda.setEnabled(is_grappa)

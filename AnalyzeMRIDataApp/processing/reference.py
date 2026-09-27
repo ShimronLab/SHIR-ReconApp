@@ -10,7 +10,6 @@ metric/resize/mismatch-warning logic lives here so both use identical behavior.
   sequence/matrix mismatch, and compute 95th-percentile-normalised metrics.
 """
 
-import sys
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional
 
@@ -21,11 +20,7 @@ def _noop(_msg: str) -> None:
     pass
 
 
-def _add_twix_path() -> None:
-    root = Path(__file__).resolve().parent.parent.parent
-    twix = str(root / "read_siemens_scans")
-    if twix not in sys.path:
-        sys.path.insert(0, twix)
+from .utils import ensure_twix_importable as _add_twix_path
 
 
 def _ifft2c(ks: np.ndarray) -> np.ndarray:

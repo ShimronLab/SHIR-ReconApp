@@ -13,7 +13,6 @@ Reconstruction reuses the GRAPPA / SENSE / CS-SENSE pipeline from
 processing/equispaced_recon.py.
 """
 
-import sys
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional
 
@@ -25,13 +24,7 @@ from skimage.metrics import structural_similarity as _ssim
 # Path helpers
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _add_twix_path() -> None:
-    here  = Path(__file__).resolve()
-    root  = here.parent.parent.parent
-    twix_dir = root / "read_siemens_scans"
-    twix_str = str(twix_dir)
-    if twix_str not in sys.path:
-        sys.path.insert(0, twix_str)
+from .utils import ensure_twix_importable as _add_twix_path
 
 
 def _ifft2c(ks: np.ndarray) -> np.ndarray:
@@ -357,6 +350,11 @@ def reconstruct_retro(
     recon_image = None
     recon_kspace_rss = None   # only set when GRAPPA produces a reconstructed k-space
     rmse = psnr = ssim = None
+    # Initialised here (not inside the if-block): the return dict references
+    # sens_maps_out unconditionally, including on the recon_method == "none" path.
+    recon_kspace  = None
+    sense_img     = None
+    sens_maps_out = None
 
     if recon_method != "none":
         log(f"  Running reconstruction: {recon_method}…")
@@ -365,10 +363,6 @@ def reconstruct_retro(
             calib = undersampled_kspace[acs_start:acs_end, :, :]
         else:
             calib = undersampled_kspace[:, acs_start:acs_end, :]
-
-        recon_kspace  = None
-        sense_img     = None
-        sens_maps_out = None
 
         if recon_method == "grappa":
             try:

@@ -20,7 +20,6 @@ PICS actually remove the aliasing. See Reconstruct_PoissonDisc.ipynb for the
 full diagnosis, and equispaced_recon.py for the same ESPIRiT+PICS machinery.
 """
 
-import sys
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional
 
@@ -33,17 +32,7 @@ from .utils import (
 )
 
 
-def _add_twix_path() -> None:
-    """Put the TWIX reader package on sys.path (supports both repo layouts)."""
-    root = Path(__file__).resolve().parent.parent.parent
-    for name in ("read_siemens_scans", "read_siemens_scans-Alon"):
-        p = root / name
-        if p.exists() and str(p) not in sys.path:
-            sys.path.insert(0, str(p))
-    # Fall back to the canonical name even if the folder check missed it.
-    canonical = str(root / "read_siemens_scans")
-    if canonical not in sys.path:
-        sys.path.insert(0, canonical)
+from .utils import ensure_twix_importable as _add_twix_path
 
 
 def _ifft2c(ks: np.ndarray) -> np.ndarray:

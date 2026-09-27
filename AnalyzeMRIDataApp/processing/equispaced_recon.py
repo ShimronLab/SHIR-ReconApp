@@ -22,7 +22,6 @@ Pipeline:
 
 import os
 import re
-import sys
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional
 
@@ -36,18 +35,7 @@ def _parse_r_from_filename(dat_path: str) -> Optional[int]:
     return int(m.group(1)) if m else None
 
 
-def _add_twix_path() -> None:
-    here = Path(__file__).resolve()
-    root = here.parent.parent.parent
-    twix_dir = root / "read_siemens_scans"
-    twix_str = str(twix_dir)
-    if twix_str not in sys.path:
-        sys.path.insert(0, twix_str)
-    # Also try legacy name
-    twix_dir2 = root / "read_siemens_scans-Alon"
-    twix_str2 = str(twix_dir2)
-    if twix_dir2.exists() and twix_str2 not in sys.path:
-        sys.path.insert(0, twix_str2)
+from .utils import ensure_twix_importable as _add_twix_path
 
 
 def _ifft2c(ks: np.ndarray) -> np.ndarray:

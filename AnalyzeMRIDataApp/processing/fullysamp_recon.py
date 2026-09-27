@@ -19,13 +19,7 @@ from typing import Any, Callable, Dict, Optional
 import numpy as np
 
 
-def _add_twix_path() -> None:
-    here = Path(__file__).resolve()
-    root = here.parent.parent.parent
-    twix_dir = root / "read_siemens_scans-Alon"
-    twix_str = str(twix_dir)
-    if twix_str not in sys.path:
-        sys.path.insert(0, twix_str)
+from .utils import ensure_twix_importable as _add_twix_path
 
 
 def _ifft2c(ks: np.ndarray) -> np.ndarray:

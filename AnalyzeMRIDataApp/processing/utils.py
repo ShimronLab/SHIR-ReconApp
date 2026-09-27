@@ -9,12 +9,27 @@ import logging as _logging
 import os
 import re
 import subprocess
+import sys
 import tempfile
 from enum import Enum, auto
 from pathlib import Path
 from typing import Callable, Optional, Tuple
 
 import numpy as np
+
+
+def ensure_twix_importable() -> None:
+    """
+    Make the sibling ``read_siemens_scans`` package importable.
+
+    The TWIX reader lives next to AnalyzeMRIDataApp/ (not installed as a
+    package); app.py adds it to sys.path at startup, but recon modules must
+    also work when imported directly (tests, batch_report, scripts).
+    """
+    root = Path(__file__).resolve().parent.parent.parent
+    twix_dir = str(root / "read_siemens_scans")
+    if twix_dir not in sys.path:
+        sys.path.insert(0, twix_dir)
 
 
 # ─────────────────────────────────────────────────────────────────────────────

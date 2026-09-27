@@ -6,8 +6,6 @@ Pipeline (mirrors RestorebandBart.ipynb):
   →  crop  →  BART fft  →  normalise  →  BART ecalib  →  BART pics -S
 """
 
-import os
-import sys
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional
 
@@ -20,15 +18,7 @@ from .utils import (
 )
 
 
-def _add_twix_path() -> None:
-    """Ensure the read_siemens_scans package is on sys.path."""
-    here = Path(__file__).resolve()
-    # Walk up to find read_siemens_scans-Alon alongside AnalyzeMRIDataApp
-    root = here.parent.parent.parent
-    twix_dir = root / "read_siemens_scans-Alon"
-    twix_str = str(twix_dir)
-    if twix_str not in sys.path:
-        sys.path.insert(0, twix_str)
+from .utils import ensure_twix_importable as _add_twix_path
 
 
 def reconstruct_band(
