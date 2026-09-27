@@ -1,4 +1,4 @@
-# SHIR — System for Hybrid Image Reconstruction
+# SHIR - System for Hybrid Image Reconstruction
 
 **SHIR** is a PyQt5 desktop application for multi-pipeline MRI reconstruction and
 visualisation of Siemens TWIX `.dat` files. It runs from source (Linux / WSL / macOS)
@@ -6,7 +6,7 @@ and can be packaged as a standalone app for **Windows (`SHIR.exe`)** and
 **macOS (`SHIR.app`)**.
 
 This repository is the **standalone reconstruction app**, extracted from a larger
-research toolkit. It contains everything needed to run and build the app — no
+research toolkit. It contains everything needed to run and build the app - no
 pulse-sequence generation code is included.
 
 Supported reconstruction pipelines include fully-sampled RSS / ESPIRiT (SENSE),
@@ -29,12 +29,12 @@ SHIR-ReconApp/
 │   ├── testing/             # development notebooks (PE-mask comparison, …)
 │   ├── requirements.txt     # pinned Python dependencies
 │   └── README.md            # full app documentation (usage, pipelines, params)
-├── read_siemens_scans/      # TWIX (.dat) reader package — REQUIRED, imported by the app
+├── read_siemens_scans/      # TWIX (.dat) reader package - REQUIRED, imported by the app
 ├── ggrappa/                 # vendored optional dep for the "gGRAPPA (PyTorch)" option
 └── run_mri_app.bat          # Windows launcher (WSL + conda)
 ```
 
-> `read_siemens_scans/` must remain a **sibling** of `AnalyzeMRIDataApp/` — the app
+> `read_siemens_scans/` must remain a **sibling** of `AnalyzeMRIDataApp/` - the app
 > resolves it by relative path at startup.
 
 Full usage, pipeline, and parameter documentation lives in
@@ -56,11 +56,11 @@ pip install -r AnalyzeMRIDataApp/requirements.txt
 
 ### Optional components
 
-- **BART** (exact recon numerics) — optional. Without it, SHIR falls back to a
+- **BART** (exact recon numerics) - optional. Without it, SHIR falls back to a
   built-in **sigpy** engine. The in-app *Recon engine* selector (Auto / Force BART /
   Force sigpy) chooses between them. On Windows, BART is invoked through WSL.
 
-- **gGRAPPA (PyTorch)** — the `gGRAPPA` recon option needs the vendored `ggrappa/`
+- **gGRAPPA (PyTorch)** - the `gGRAPPA` recon option needs the vendored `ggrappa/`
   package plus PyTorch (CPU build is fine):
 
   ```bash
@@ -94,16 +94,16 @@ To build a standalone executable, see
 
 ## License & ownership
 
-**SHIR** — Copyright © 2026 **Saar Drive**, Shimron Lab,
-Technion — Israel Institute of Technology.
+**SHIR** - Copyright © 2026 **Saar Drive**, Shimron Lab,
+Technion - Israel Institute of Technology.
 
 SHIR is free software, released under the **GNU General Public License v3.0**
 (see [LICENSE](LICENSE)). GPL-3.0 was chosen because the GUI uses **PyQt5**,
-which is itself GPL-licensed — distributing SHIR binaries therefore requires
+which is itself GPL-licensed - distributing SHIR binaries therefore requires
 GPL-compatible terms.
 
 Third-party components (BART, sigpy, pygrappa, twixtools, the vendored
 `ggrappa/`, and the `read_siemens_scans` reader adapted from code by Orel
-Tsioni) remain under their own licenses — see
+Tsioni) remain under their own licenses - see
 [THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md). Full credits are in
 [`AnalyzeMRIDataApp/README.md`](AnalyzeMRIDataApp/README.md).
