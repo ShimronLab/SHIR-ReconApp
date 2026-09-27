@@ -1,0 +1,29 @@
+# ── Python ─────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+
+# ── PyInstaller build output ───────────────────────────
+AnalyzeMRIDataApp/Compile/build/
+AnalyzeMRIDataApp/Compile/compilation_product/
+AnalyzeMRIDataApp/Compile/dist/
+*.spec.bak
+
+# ── App outputs (keep the folder, ignore generated report files) ──
+AnalyzeMRIDataApp/results/*
+!AnalyzeMRIDataApp/results/.gitkeep
+
+# ── Raw MRI data (never commit scans) ──────────────────
+*.dat
+scans/
+
+# ── Editors / OS ───────────────────────────────────────
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db

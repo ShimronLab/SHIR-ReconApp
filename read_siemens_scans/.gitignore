@@ -1,0 +1,4 @@
+data.py
+debug.py
+__pycache__/
+read_siemens_scans/__pycache__/

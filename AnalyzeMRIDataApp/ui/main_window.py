@@ -1,0 +1,835 @@
+"""
+MainWindow — top-level application window.
+
+Layout
+------
+  Toolbar: [Open Folder] [Run] [Stop] [All Coils] [Clear Tabs] [About]
+  ┌──────────┬────────────────────────────────┬──────────┐
+  │  Folder  │       ResultsViewer            │  Params  │
+  │  Panel   │         (tabs)                 │  Panel   │
+  │          │                                │          │
+  ├──────────┴────────────────────────────────┴──────────┤
+  │  Progress bar  |  Log console                        │
+  └──────────────────────────────────────────────────────┘
+
+Worker thread
+─────────────
+  One QThread per job; emits progress_msg(str), result_ready(dict), finished().
+  Multiple jobs run sequentially to avoid overwhelming BART.
+"""
+
+import os
+import sys
+import threading
+from pathlib import Path
+from typing import Any, Dict, List, Optional
+
+import numpy as np
+from PyQt5.QtCore import QObject, QThread, Qt, pyqtSignal
+from PyQt5.QtGui import QIcon, QTextCursor
+from PyQt5.QtWidgets import (
+    QAction,
+    QApplication,
+    QFileDialog,
+    QHBoxLayout,
+    QInputDialog,
+    QLabel,
+    QMainWindow,
+    QMessageBox,
+    QProgressBar,
+    QSplitter,
+    QStatusBar,
+    QTextEdit,
+    QToolBar,
+    QVBoxLayout,
+    QWidget,
+)
+
+from .folder_panel   import FolderPanel
+from .params_panel   import ParamsPanel
+from .results_viewer import ResultsViewer
+from .report_generator import generate_pdf
+from resources import resource_path
+from version import __version__
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Worker (runs a single reconstruction job in a background thread)
+# ─────────────────────────────────────────────────────────────────────────────
+
+class ReconWorker(QObject):
+    """Runs one reconstruction job; emits signals back to the main thread."""
+    progress_msg          = pyqtSignal(str)
+    result_ready          = pyqtSignal(dict)       # carries result + meta on success
+    error_signal          = pyqtSignal(str)        # carries error message
+    finished              = pyqtSignal()
+    slice_selection_needed = pyqtSignal(int)       # n_slices — request dialog on main thread
+    mask_fallback_needed  = pyqtSignal()           # no JSON traj — request mask-choice dialog
+
+    def __init__(self, job: Dict[str, Any], params: Dict[str, Any]):
+        super().__init__()
+        self._job    = job
+        self._params = params
+        self._abort  = False
+        self._slice_event  = threading.Event()
+        self._slice_choice: Optional[int] = None
+        self._mask_event   = threading.Event()
+        self._mask_choice: Optional[str] = None
+
+    def abort(self) -> None:
+        self._abort = True
+        self._slice_event.set()  # unblock if waiting for slice selection
+        self._mask_event.set()   # unblock if waiting for mask-fallback choice
+
+    def set_slice_choice(self, idx: int) -> None:
+        """Called from the main thread to unblock _request_slice()."""
+        self._slice_choice = idx
+        self._slice_event.set()
+
+    def _request_slice(self, n_slices: int) -> int:
+        """Block the worker thread and ask the main thread to show a dialog."""
+        self._slice_event.clear()
+        self._slice_choice = None
+        self.slice_selection_needed.emit(n_slices)
+        self._slice_event.wait()          # releases main-thread event loop
+        return self._slice_choice if self._slice_choice is not None else (n_slices // 2)
+
+    def set_mask_choice(self, choice: str) -> None:
+        """Called from the main thread to unblock _request_mask_fallback()."""
+        self._mask_choice = choice
+        self._mask_event.set()
+
+    def _request_mask_fallback(self) -> str:
+        """Block the worker thread and ask the main thread which mask to build."""
+        self._mask_event.clear()
+        self._mask_choice = None
+        self.mask_fallback_needed.emit()
+        self._mask_event.wait()           # releases main-thread event loop
+        return self._mask_choice if self._mask_choice is not None else "analytical"
+
+    def run(self) -> None:
+        job    = self._job
+        params = self._params
+        stype  = job.get("scan_type", "UNKNOWN")
+
+        def cb(msg: str) -> None:
+            self.progress_msg.emit(msg)
+
+        # Slice callback: when this job targets a specific slice (multi-slice
+        # selection), force it silently; otherwise fall back to the dialog.
+        if job.get("slice_idx") is not None:
+            _forced = int(job["slice_idx"])
+            slice_cb = lambda _n, _i=_forced: _i          # noqa: E731
+        else:
+            slice_cb = self._request_slice
+
+        try:
+            # Add processing package to path (needed when running from 'ui' sub-dir)
+            _ensure_processing_on_path()
+
+            # Select the reconstruction engine (BART vs sigpy) for this job.
+            from processing import recon_backend
+            recon_backend.set_backend_mode(params.get("recon_backend", "auto"))
+            cb(f"Recon engine: {recon_backend.active_backend_label()} "
+               f"(mode={recon_backend.get_backend_mode()}, "
+               f"BART available={recon_backend.bart_available()})")
+
+            if stype == "BAND":
+                from processing.band_recon import reconstruct_band
+                result = reconstruct_band(
+                    dat_path       = job["dat_path"],
+                    bands_json_path= job["json_path"],
+                    band_idx       = job["band_idx"],
+                    grid_size      = params["grid_size"],
+                    calib_width    = params["calib_width"],
+                    scan_fov_m     = params["scan_fov_m"],
+                    crop_size      = params.get("crop_size", 0) or None,
+                    traj_margin    = params["traj_margin"],
+                    tse            = params.get("tse"),
+                    progress_cb    = cb,
+                )
+
+            elif stype == "FULLY_SAMPLED":
+                from processing.fullysamp_recon import reconstruct_fullysamp
+                result = reconstruct_fullysamp(
+                    dat_path    = job["dat_path"],
+                    use_sense   = params.get("fullysamp_mode", "rss") == "sense",
+                    calib_width = params.get("calib_width", 24),
+                    tse         = params.get("tse"),
+                    necho       = params.get("tse_necho"),
+                    te1         = params.get("tse_te1"),
+                    teeff       = params.get("tse_teeff"),
+                    progress_cb = cb,
+                    slice_selector_cb = slice_cb,
+                )
+
+            elif stype == "EQUISPACED":
+                from processing.equispaced_recon import reconstruct_equispaced
+                ref_path = job.get("reference_dat_path")
+                result = reconstruct_equispaced(
+                    dat_path            = job["dat_path"],
+                    method              = params.get("equi_method", "grappa"),
+                    json_path           = job.get("json_path"),
+                    mask_method         = params.get("equi_mask_method", "analytical"),
+                    acs_lines           = params["acs_lines"],
+                    r_factor            = params["r_factor"],
+                    kernel_size         = tuple(params["kernel_size"]),
+                    lamda               = params["grappa_lambda"],
+                    calib_width         = params.get("calib_width", 24),
+                    sense_lambda        = params.get("sense_lambda", 0.01),
+                    sense_max_iter      = params.get("sense_max_iter", 100),
+                    sense_l2            = params.get("sense_l2", False),
+                    espirit_num_maps    = params.get("espirit_num_maps", 2),
+                    tse                 = params.get("tse"),
+                    necho               = params.get("tse_necho"),
+                    te1                 = params.get("tse_te1"),
+                    teeff               = params.get("tse_teeff"),
+                    reference_dat_path  = ref_path,
+                    progress_cb         = cb,
+                    slice_selector_cb   = slice_cb,
+                    mask_fallback_cb    = self._request_mask_fallback,
+                )
+
+            elif stype == "POISSON":
+                from processing.poisson_recon import reconstruct_poisson
+                result = reconstruct_poisson(
+                    dat_path           = job["dat_path"],
+                    poisson_json_path  = job["json_path"],
+                    grid_size          = params["grid_size"],
+                    calib_width        = params["calib_width"],
+                    scan_fov_m         = params["scan_fov_m"],
+                    crop_size          = params.get("crop_size", 0) or None,
+                    traj_margin        = params["traj_margin"],
+                    lambda_wav         = params["lambda_wav"],
+                    max_iter           = params["max_iter"],
+                    use_zerofill       = params.get("poisson_mode", "pics") == "zerofill",
+                    tse                = params.get("tse"),
+                    reference_dat_path = job.get("reference_dat_path"),
+                    progress_cb        = cb,
+                )
+
+            elif stype == "RETRO_UNDERSAMPLE":
+                from processing.retro_undersample import reconstruct_retro
+                result = reconstruct_retro(
+                    dat_path        = job["dat_path"],
+                    mask_type       = params.get("sim_mask_type",    "equispaced"),
+                    R               = params.get("sim_R",            4.0),
+                    power_decay     = params.get("sim_power_decay",  1.0),
+                    acs_lines       = params.get("sim_acs_lines",    24),
+                    recon_method    = params.get("sim_recon_method", "none"),
+                    kernel_size     = tuple(params.get("sim_kernel_size",    (5, 5))),
+                    grappa_lambda   = params.get("sim_grappa_lambda",   0.1),
+                    calib_width     = params.get("calib_width",     24),
+                    sense_lambda    = params.get("sim_sense_lambda",    0.01),
+                    sense_max_iter  = params.get("sim_sense_iters",  100),
+                    sense_l2        = params.get("sense_l2",        False),
+                    espirit_num_maps = params.get("espirit_num_maps", 2),
+                    swap_pe_read    = params.get("sim_swap_pe_read", False),
+                    tse             = params.get("tse"),
+                    necho           = params.get("tse_necho"),
+                    te1             = params.get("tse_te1"),
+                    teeff           = params.get("tse_teeff"),
+                    progress_cb     = cb,
+                    slice_selector_cb = slice_cb,
+                )
+
+            else:
+                # UNKNOWN (or anything unforeseen) — generic fallback so the
+                # user always gets an image instead of an error.
+                cb(f"[WARN] Unrecognized scan type '{stype}' — using generic "
+                   f"fallback recon (mode={params.get('unknown_mode', 'auto')}).")
+                from processing.generic_recon import reconstruct_generic
+                result = reconstruct_generic(
+                    dat_path    = job["dat_path"],
+                    json_path   = job.get("json_path"),
+                    mode        = params.get("unknown_mode", "auto"),
+                    grid_size   = params["grid_size"],
+                    calib_width = params.get("calib_width", 24),
+                    scan_fov_m  = params["scan_fov_m"],
+                    crop_size   = params.get("crop_size", 0) or None,
+                    traj_margin = params["traj_margin"],
+                    lambda_wav  = params.get("lambda_wav", 0.01),
+                    max_iter    = params.get("max_iter", 100),
+                    tse         = params.get("tse"),
+                    necho       = params.get("tse_necho"),
+                    te1         = params.get("tse_te1"),
+                    teeff       = params.get("tse_teeff"),
+                    progress_cb = cb,
+                    slice_selector_cb = slice_cb,
+                )
+
+            result["scan_type"] = stype
+            result["label"]     = _make_label(job)
+            # Append recon mode suffix for Equispaced tabs
+            if stype == "EQUISPACED":
+                method = result.get("method", "grappa")
+                suffix_map = {
+                    "grappa":     " (GRAPPA)",
+                    "sense":      " (SENSE)",
+                    "sense_cs":   " (CS-SENSE)",
+                    "espirit":    " (ESPIRiT)",
+                    "espirit_l1": " (ESPIRiT-L1)",
+                }
+                result["label"] += suffix_map.get(method, "")
+            # Append recon mode suffix for Poisson tabs
+            if stype == "POISSON":
+                mode = result.get("recon_mode", "pics")
+                suffix = " (ZF)" if mode == "zerofill" else " (CS)"
+                result["label"] += suffix
+            if stype == "RETRO_UNDERSAMPLE":
+                mtype  = result.get("mask_type", "equispaced").upper()
+                actual = result.get("actual_r", 0)
+                method = result.get("method", "none")
+                suffix_map = {"none": "", "grappa": " GRAPPA", "ggrappa": " gGRAPPA",
+                              "sense": " SENSE", "sense_cs": " CS-SENSE",
+                              "espirit": " ESPIRiT", "espirit_l1": " ESPIRiT-L1"}
+                result["label"] += f" [{mtype} R={actual:.1f}×{suffix_map.get(method, '')}]"
+            if stype not in ("BAND", "FULLY_SAMPLED", "EQUISPACED", "POISSON",
+                             "RETRO_UNDERSAMPLE"):
+                suffix_map = {"nufft": " (NUFFT RSS)", "cs": " (CS)",
+                              "cartesian": " (RSS)"}
+                result["label"] += suffix_map.get(result.get("recon_path"), " (RSS)")
+            result["dat_path"]  = job["dat_path"]
+            self.result_ready.emit(result)
+
+        except Exception as exc:
+            self.error_signal.emit(f"[ERROR] {type(exc).__name__}: {exc}")
+
+        finally:
+            self.finished.emit()
+
+
+def _ensure_processing_on_path() -> None:
+    app_dir = str(Path(__file__).resolve().parent.parent)
+    if app_dir not in sys.path:
+        sys.path.insert(0, app_dir)
+
+
+def _make_label(job: Dict) -> str:
+    folder_key = job.get("folder_key", "")
+    stype      = job.get("scan_type", "")
+    bidx       = job.get("band_idx")
+    name       = Path(job.get("dat_path", "")).stem
+    if stype == "BAND" and bidx is not None:
+        base = f"{folder_key} — Band {bidx}"
+    elif stype == "EQUISPACED":
+        base = f"{folder_key} — Equispaced"
+    elif stype == "RETRO_UNDERSAMPLE":
+        base = f"{folder_key} — Retro Sim"
+    elif stype == "UNKNOWN":
+        # Several unknown files may share a folder — keep the stem in the label.
+        base = f"{folder_key} — {name}"
+    else:
+        base = f"{folder_key} — {stype.replace('_', ' ').title()}"
+    # Per-slice suffix keeps every slice's tab label unique (multi-slice runs).
+    if job.get("n_slices", 1) and job.get("slice_idx") is not None:
+        base += f" — slice {int(job['slice_idx']) + 1}/{int(job['n_slices'])}"
+    return base
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Main Window
+# ─────────────────────────────────────────────────────────────────────────────
+
+class MainWindow(QMainWindow):
+    """Application main window."""
+
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle(
+            f"SHIR — System for Hybrid Image Reconstruction  ·  v{__version__}"
+        )
+        try:
+            icon = QIcon(resource_path("Graphics", "logo.png"))
+            if not icon.isNull():
+                self.setWindowIcon(icon)
+        except Exception:
+            pass   # missing graphics must never block launch
+        self.resize(1400, 860)
+
+        self._workers: List[QThread] = []
+        self._job_queue: List[Dict]  = []
+        self._params: Dict           = {}
+        self._results: List[Dict]    = []   # accumulate for PDF
+        self._active_thread: Optional[QThread] = None
+
+        self._build_ui()
+        self._build_toolbar()
+        self._build_status_bar()
+
+    # ─── UI construction ──────────────────────────────────────────────────────
+
+    def _build_ui(self) -> None:
+        central = QWidget()
+        self.setCentralWidget(central)
+        main_layout = QVBoxLayout(central)
+        main_layout.setContentsMargins(4, 4, 4, 4)
+        main_layout.setSpacing(4)
+
+        # Three-pane splitter
+        self._splitter = QSplitter(Qt.Horizontal)
+        self._folder_panel = FolderPanel()
+        self._results_viewer = ResultsViewer()
+        self._params_panel = ParamsPanel()
+
+        self._splitter.addWidget(self._folder_panel)
+        self._splitter.addWidget(self._results_viewer)
+        self._splitter.addWidget(self._params_panel)
+        self._splitter.setStretchFactor(0, 0)
+        self._splitter.setStretchFactor(1, 1)
+        self._splitter.setStretchFactor(2, 0)
+        self._splitter.setSizes([440, 820, 280])
+
+        # Bottom: progress + log
+        self._progress = QProgressBar()
+        self._progress.setRange(0, 0)   # indeterminate spinner
+        self._progress.setVisible(False)
+        self._progress.setFixedHeight(18)
+
+        self._log = QTextEdit()
+        self._log.setReadOnly(True)
+        self._log.setMaximumHeight(130)
+        self._log.setStyleSheet("QTextEdit { font-family: monospace; font-size: 11px; }")
+
+        bottom = QVBoxLayout()
+        bottom.setSpacing(2)
+        bottom.addWidget(self._progress)
+        bottom.addWidget(self._log)
+
+        main_layout.addWidget(self._splitter, stretch=1)
+        main_layout.addLayout(bottom)
+
+        # Signals
+        self._folder_panel.run_requested.connect(self._on_run_requested)
+        self._folder_panel.simulate_requested.connect(self._on_simulate_requested)
+        self._params_panel.save_output_requested.connect(self._on_save_output)
+
+    def _build_toolbar(self) -> None:
+        tb = QToolBar("Main")
+        tb.setMovable(False)
+        self.addToolBar(tb)
+
+        act_open = QAction("📂  Open Folder", self)
+        act_open.setToolTip("Open a scan folder to analyse")
+        act_open.triggered.connect(self._folder_panel._on_open_folder)
+        tb.addAction(act_open)
+
+        tb.addSeparator()
+
+        self._act_run = QAction("▶  Run Selected", self)
+        self._act_run.setToolTip("Start processing checked scans")
+        self._act_run.triggered.connect(self._folder_panel._on_run)
+        tb.addAction(self._act_run)
+
+        self._act_simulate = QAction("💫 Undersampling Simulator", self)
+        self._act_simulate.setToolTip(
+            "Retrospectively undersample a fully-sampled scan and reconstruct.\n"
+            "Check at least one Fully-Sampled scan first."
+        )
+        self._act_simulate.triggered.connect(self._folder_panel._on_simulate)
+        tb.addAction(self._act_simulate)
+
+        self._act_stop = QAction("■  Stop", self)
+        self._act_stop.setToolTip("Abort current processing")
+        self._act_stop.setEnabled(False)
+        self._act_stop.triggered.connect(self._on_stop)
+        tb.addAction(self._act_stop)
+
+        tb.addSeparator()
+
+        act_coils = QAction("🔬  All Coils", self)
+        act_coils.setToolTip("Open all-coils viewer for current tab")
+        act_coils.triggered.connect(self._results_viewer.show_all_coils_current)
+        tb.addAction(act_coils)
+
+        act_clear = QAction("🗑  Clear Tabs", self)
+        act_clear.setToolTip("Remove all result tabs")
+        act_clear.triggered.connect(self._on_clear_results)
+        tb.addAction(act_clear)
+
+        tb.addSeparator()
+
+        act_about = QAction("ℹ  About", self)
+        act_about.triggered.connect(self._on_about)
+        tb.addAction(act_about)
+
+    def _build_status_bar(self) -> None:
+        self._status_label = QLabel("Ready")
+        self.statusBar().addPermanentWidget(self._status_label)
+
+    # ─── Job execution ────────────────────────────────────────────────────────
+
+    def _on_run_requested(self, jobs: List[Dict]) -> None:
+        if self._active_thread is not None and self._active_thread.isRunning():
+            QMessageBox.warning(self, "Busy", "A reconstruction is already running.\nPlease wait or stop it first.")
+            return
+
+        params = self._params_panel.get_params()
+        self._params = params
+
+        # Attach fully-sampled reference to GRAPPA jobs in same folder
+        jobs = _attach_references(jobs)
+
+        self._job_queue = list(jobs)
+        self._log_msg(f"Queued {len(jobs)} job(s). Starting…")
+        self._run_next_job()
+
+    def _on_simulate_requested(self, jobs: List[Dict]) -> None:
+        """Handle jobs from the Simulate button (RETRO_UNDERSAMPLE scan type)."""
+        if self._active_thread is not None and self._active_thread.isRunning():
+            QMessageBox.warning(self, "Busy", "A reconstruction is already running.\nPlease wait or stop it first.")
+            return
+
+        params = self._params_panel.get_params()
+        self._params = params
+
+        self._job_queue = list(jobs)
+        self._log_msg(f"[Simulate] Queued {len(jobs)} job(s). Starting…")
+        self._run_next_job()
+
+    def _run_next_job(self) -> None:
+        if not self._job_queue:
+            self._on_all_jobs_done()
+            return
+
+        job = self._job_queue.pop(0)
+        self._log_msg(f"\n── {_make_label(job)} ──")
+        self._progress.setVisible(True)
+        self._act_stop.setEnabled(True)
+        self._act_run.setEnabled(False)
+        self._status_label.setText(f"Processing: {_make_label(job)}")
+
+        worker = ReconWorker(job, self._params)
+        thread = QThread()
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.progress_msg.connect(self._log_msg)
+        worker.result_ready.connect(self._on_result_ready)
+        worker.error_signal.connect(self._on_worker_error)
+        worker.slice_selection_needed.connect(self._on_slice_selection_needed)
+        worker.mask_fallback_needed.connect(self._on_mask_fallback_needed)
+        worker.finished.connect(thread.quit)
+        worker.finished.connect(worker.deleteLater)
+        thread.finished.connect(thread.deleteLater)
+        thread.finished.connect(self._run_next_job)   # chain next job
+        thread.start()
+
+        self._active_thread = thread
+        self._active_worker = worker
+
+    def _on_result_ready(self, result: Dict) -> None:
+        label = result.get("label", "Result")
+        self._results.append(result)
+        self._results_viewer.add_result(result, label)
+        self._log_msg(f"  ✓  {label}")
+
+        # Auto-save .npy if requested
+        if self._params.get("save_npy"):
+            self._save_npy(result)
+
+    def _on_slice_selection_needed(self, n_slices: int) -> None:
+        """Main-thread slot: show a dialog and send the selected slice back to the worker."""
+        idx, ok = QInputDialog.getInt(
+            self,
+            "Multi-Slice Scan Detected",
+            f"This scan contains {n_slices} slices (0–{n_slices - 1}).\n"
+            f"Enter the slice index to reconstruct:",
+            value=n_slices // 2,
+            min=0,
+            max=n_slices - 1,
+            step=1,
+        )
+        if not ok:
+            idx = n_slices // 2
+            self._log_msg(f"  Slice selection cancelled — using middle slice {idx}")
+        else:
+            self._log_msg(f"  Slice {idx} selected")
+        if hasattr(self, "_active_worker") and self._active_worker is not None:
+            self._active_worker.set_slice_choice(idx)
+
+    def _on_mask_fallback_needed(self) -> None:
+        """Main-thread slot: ask the user which mask to build when no JSON trajectory is found."""
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Question)
+        box.setWindowTitle("No JSON Trajectory Found")
+        box.setText(
+            "No undersampling JSON trajectory was found for this scan.\n"
+            "Choose how to build the phase-encode sampling mask:"
+        )
+        btn_analytical = box.addButton("Analytical (computed)", QMessageBox.AcceptRole)
+        btn_bart       = box.addButton("BART pattern",          QMessageBox.RejectRole)
+        box.setDefaultButton(btn_analytical)
+        box.exec_()
+
+        choice = "bart_pattern" if box.clickedButton() is btn_bart else "analytical"
+        self._log_msg(f"  Mask fallback: {choice}")
+        if hasattr(self, "_active_worker") and self._active_worker is not None:
+            self._active_worker.set_mask_choice(choice)
+
+    def _on_worker_error(self, msg: str) -> None:
+        self._log_msg(msg)
+
+    def _on_all_jobs_done(self) -> None:
+        self._progress.setVisible(False)
+        self._act_stop.setEnabled(False)
+        self._act_run.setEnabled(True)
+        self._status_label.setText(f"Done — {len(self._results)} result(s)")
+        self._log_msg("\n✓ All jobs complete.")
+        # Clear references so the deleted C++ Qt objects are not accessed on the
+        # next run (calling .isRunning() on a deleteLater'd QThread crashes the app).
+        self._active_thread = None
+        self._active_worker = None
+
+        if self._params.get("gen_pdf") and self._results:
+            self._generate_and_save_pdf()
+
+    def _on_stop(self) -> None:
+        self._job_queue.clear()
+        if hasattr(self, "_active_worker") and self._active_worker is not None:
+            self._active_worker.abort()
+        self._log_msg("⚠ Stop requested — waiting for current job to finish.")
+        self._act_stop.setEnabled(False)
+
+    # ─── Output saving ─────────────────────────────────────────────────────────
+
+    def _inject_display_settings(self) -> None:
+        """Copy each tab's W/L + brightness + rotation onto its result dict."""
+        display_map = self._results_viewer.get_display_settings_map()
+        for r in self._results:
+            settings = display_map.get(r.get("label", ""), {})
+            r["_wl_min"]     = settings.get("wl_min", 0)
+            r["_wl_max"]     = settings.get("wl_max", 100)
+            r["_brightness"] = settings.get("brightness", 1.0)
+            r["_rotation"]   = settings.get("rotation", 0)
+
+    @staticmethod
+    def _group_by_folder(results: List[Dict]) -> "Dict[str, List[Dict]]":
+        groups: Dict[str, List[Dict]] = {}
+        for r in results:
+            fkey = r.get("folder_key") or Path(r.get("dat_path", "unknown")).parent.parent.name
+            groups.setdefault(fkey, []).append(r)
+        return groups
+
+    @staticmethod
+    def _pick_combined(result: Dict):
+        """First available combined image (explicit None check — arrays are not truthy)."""
+        for key in ("combined_img", "image_rss", "grappa_image", "sense_image"):
+            img = result.get(key)
+            if img is not None:
+                return img
+        return None
+
+    def _generate_and_save_pdf(self) -> None:
+        """Auto-save one PDF per folder into the run's save_dir (end-of-run path)."""
+        save_dir = Path(self._params.get("save_dir", "."))
+        save_dir.mkdir(parents=True, exist_ok=True)
+
+        self._inject_display_settings()
+
+        for fkey, group_results in self._group_by_folder(self._results).items():
+            pdf_path = str(save_dir / f"report_{fkey}.pdf")
+            try:
+                generate_pdf(
+                    results       = group_results,
+                    output_path   = pdf_path,
+                    folder_name   = fkey,
+                    params_summary= self._params,
+                )
+                self._log_msg(f"  📄 PDF saved: {pdf_path}")
+            except Exception as e:
+                self._log_msg(f"  ⚠ PDF generation failed for {fkey}: {e}")
+
+    def _on_save_output(self) -> None:
+        """Manual save: prompt per folder and write the checked outputs (PDF/.npy)."""
+        if not self._results:
+            QMessageBox.information(self, "No results", "Run some reconstructions first.")
+            return
+
+        # Read LIVE panel state (not the params captured at run start), so the
+        # current Save directory and checkbox choices are honoured.
+        p        = self._params_panel.get_params()
+        save_dir = p.get("save_dir", ".")
+        gen_pdf  = bool(p.get("gen_pdf"))
+        save_npy = bool(p.get("save_npy"))
+
+        if not gen_pdf and not save_npy:
+            QMessageBox.information(
+                self, "Nothing selected",
+                "Check 'Generate PDF report' and/or 'Save combined images (.npy)' first.",
+            )
+            return
+
+        if gen_pdf:
+            self._inject_display_settings()
+
+        saved: List[str] = []
+        for fkey, group_results in self._group_by_folder(self._results).items():
+            chosen, _ = QFileDialog.getSaveFileName(
+                self, f"Save Output — {fkey}",
+                str(Path(save_dir) / fkey), "All Files (*)",
+            )
+            if not chosen:
+                self._log_msg(f"  Save cancelled for {fkey} — skipped.")
+                continue
+
+            stem    = Path(chosen).stem
+            out_dir = Path(chosen).parent
+            out_dir.mkdir(parents=True, exist_ok=True)
+
+            if gen_pdf:
+                pdf_path = str(out_dir / f"{stem}.pdf")
+                try:
+                    generate_pdf(
+                        results       = group_results,
+                        output_path   = pdf_path,
+                        folder_name   = fkey,
+                        params_summary= p,
+                    )
+                    saved.append(pdf_path)
+                    self._log_msg(f"  📄 PDF saved: {pdf_path}")
+                except Exception as e:
+                    self._log_msg(f"  ⚠ PDF generation failed for {fkey}: {e}")
+
+            if save_npy:
+                multi = len(group_results) > 1
+                for r in group_results:
+                    combined = self._pick_combined(r)
+                    if combined is None:
+                        continue
+                    if multi:
+                        label = r.get("label", "result").replace(" ", "_").replace("—", "-")
+                        npy_path = out_dir / f"{stem}_{label}.npy"
+                    else:
+                        npy_path = out_dir / f"{stem}.npy"
+                    np.save(str(npy_path), np.squeeze(combined))
+                    saved.append(str(npy_path))
+                    self._log_msg(f"  💾 .npy saved: {npy_path}")
+
+        if saved:
+            self._status_label.setText(f"Saved {len(saved)} file(s)")
+            QMessageBox.information(
+                self, "Save output",
+                f"Saved {len(saved)} file(s):\n" + "\n".join(saved),
+            )
+
+    # ─── Helpers ──────────────────────────────────────────────────────────────
+
+    def _save_npy(self, result: Dict) -> None:
+        save_dir = Path(self._params.get("save_dir", "."))
+        save_dir.mkdir(parents=True, exist_ok=True)
+        label = result.get("label", "result").replace(" ", "_").replace("—", "-")
+        combined = self._pick_combined(result)
+        if combined is not None:
+            npy_path = save_dir / f"{label}.npy"
+            np.save(str(npy_path), np.squeeze(combined))
+            self._log_msg(f"  💾 .npy saved: {npy_path}")
+
+    def _on_clear_results(self) -> None:
+        self._results_viewer.clear_all()
+        self._results.clear()
+        self._log_msg("All result tabs cleared.")
+
+    def _log_msg(self, msg: str) -> None:
+        self._log.moveCursor(QTextCursor.End)
+        self._log.insertPlainText(msg + "\n")
+        self._log.moveCursor(QTextCursor.End)
+
+    def _on_about(self) -> None:
+        QMessageBox.about(
+            self,
+            "About SHIR",
+            f"<b>SHIR</b> — System for Hybrid Image Reconstruction<br>"
+            f"v{__version__}<br><br>"
+            "Processes Siemens TWIX .dat files via BART.<br><br>"
+            "Supported modes:<br>"
+            "&nbsp;• Band (NUFFT + ESPIRiT + PICS)<br>"
+            "&nbsp;• Fully-sampled (IFFT + RSS or ESPIRiT SENSE)<br>"
+            "&nbsp;• Equispaced (GRAPPA via pygrappa / Pure SENSE / CS-SENSE via BART)<br>"
+            "&nbsp;• Poisson-disc CS (BART PICS + wavelet)<br>"
+            "&nbsp;• Unknown scans — generic fallback (NUFFT with a trajectory "
+            "JSON / assumed-radial, CS with a mask from k-space, or "
+            "Cartesian IFFT + RSS)<br><br>"
+            "Requires: BART, PyQt5, pygrappa, sigpy, numpy, matplotlib.<br>"
+            "Run in WSL where BART is available.",
+        )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Utilities
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _attach_references(jobs: List[Dict]) -> List[Dict]:
+    """
+    For EQUISPACED jobs, find a suitable fully-sampled reference in the same folder.
+
+    Two reference categories:
+      * custom ("mine")  — file containing "fully_sampled" in the name
+      * Siemens SE       — file matching Siemens SE patterns (*_se_tra*.dat,
+                           *t1_se*, *_se_*tra*) but NOT a GRAPPA file
+
+    Siemens GRAPPA scans (filenames containing "t1_fl2d_tra", "Siemens_", or
+    "_equispaced_R") are routed to the Siemens SE reference; all other scans
+    are routed to the custom fully-sampled reference.
+    """
+    import re as _re
+    _SIEMENS_GRAPPA = _re.compile(
+        r"(Siemens_|t1_fl2d_tra|_fl2d_tra)", _re.IGNORECASE
+    )
+    _SIEMENS_SE = _re.compile(
+        r"(t1_se_tra|_se_tra|t1_se_)", _re.IGNORECASE
+    )
+    _GRAPPA_SE_EXCLUSION = _re.compile(
+        r"(grappa|fl2d|equispaced|poisson|band)", _re.IGNORECASE
+    )
+
+    # Build per-folder reference maps
+    fs_map: Dict[str, str]         = {}   # custom fully-sampled
+    siemens_se_map: Dict[str, str] = {}   # Siemens SE
+
+    for j in jobs:
+        dat_dir = str(Path(j["dat_path"]).parent)
+        fname   = Path(j["dat_path"]).name
+        if j["scan_type"] == "FULLY_SAMPLED":
+            fs_map[dat_dir] = j["dat_path"]
+        elif _SIEMENS_SE.search(fname) and not _GRAPPA_SE_EXCLUSION.search(fname):
+            siemens_se_map[dat_dir] = j["dat_path"]
+
+    # Disk scan: look for files not already in the job list
+    for j in jobs:
+        dat_dir = Path(j["dat_path"]).parent
+        dat_dir_str = str(dat_dir)
+
+        if dat_dir_str not in fs_map:
+            for f in dat_dir.glob("*fully_sampled*.dat"):
+                fs_map[dat_dir_str] = str(f)
+                break
+
+        if dat_dir_str not in siemens_se_map:
+            for f in dat_dir.glob("*.dat"):
+                if _SIEMENS_SE.search(f.name) and not _GRAPPA_SE_EXCLUSION.search(f.name):
+                    siemens_se_map[dat_dir_str] = str(f)
+                    break
+
+    for j in jobs:
+        # A user-set reference (folder-panel "Set reference") is never overwritten.
+        if j.get("reference_override"):
+            continue
+        if j["scan_type"] == "EQUISPACED":
+            dat_dir = str(Path(j["dat_path"]).parent)
+            fname   = Path(j["dat_path"]).name
+            if _SIEMENS_GRAPPA.search(fname):
+                # Siemens GRAPPA scan → prefer Siemens SE, fall back to custom
+                ref = siemens_se_map.get(dat_dir) or fs_map.get(dat_dir)
+            else:
+                # Custom scan → prefer custom fully-sampled
+                ref = fs_map.get(dat_dir) or siemens_se_map.get(dat_dir)
+            if ref:
+                j["reference_dat_path"] = ref
+        elif j["scan_type"] == "POISSON":
+            # Poisson-disc is non-Cartesian; just take any fully-sampled in the
+            # folder (custom preferred, else the Siemens SE) for comparison.
+            dat_dir = str(Path(j["dat_path"]).parent)
+            ref = fs_map.get(dat_dir) or siemens_se_map.get(dat_dir)
+            if ref:
+                j["reference_dat_path"] = ref
+    return jobs
