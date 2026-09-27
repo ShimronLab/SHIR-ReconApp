@@ -3,7 +3,7 @@
 from .utils import (
     writecfl, readcfl, run_bart,
     load_trajectory, scale_trajectory,
-    band_mask_from_traj, auto_detect_scan_type, ScanType,
+    auto_detect_scan_type, ScanType,
 )
 from .band_recon import reconstruct_band
 from .fullysamp_recon import reconstruct_fullysamp
@@ -16,7 +16,7 @@ from .tse_reorder import (
 __all__ = [
     "writecfl", "readcfl", "run_bart",
     "load_trajectory", "scale_trajectory",
-    "band_mask_from_traj", "auto_detect_scan_type", "ScanType",
+    "auto_detect_scan_type", "ScanType",
     "reconstruct_band",
     "reconstruct_fullysamp",
     "reconstruct_equispaced",

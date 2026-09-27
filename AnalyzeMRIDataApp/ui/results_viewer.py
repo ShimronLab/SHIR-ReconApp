@@ -38,6 +38,17 @@ MASK_THRESHOLD_DEFAULT  = 0.1
 MASK_DILATION_DEFAULT   = 10
 
 
+from processing.constants import method_display_label as _method_display_label
+from processing.constants import (
+    SCAN_BAND,
+    SCAN_EQUISPACED,
+    SCAN_FULLY_SAMPLED,
+    SCAN_POISSON,
+    SCAN_RETRO_UNDERSAMPLE,
+    SCAN_UNKNOWN,
+)
+
+
 class _ImageSelectDialog(QDialog):
     """Checklist dialog: user picks which subplot images to include in the export."""
 
@@ -336,8 +347,8 @@ class ReconTab(QWidget):
 
         # Center/Crop alignment is equispaced-only; the ROI (anatomy-mask) metrics
         # are available for equispaced AND Poisson (both compare to a reference).
-        _is_eq   = self._result.get("scan_type") == "EQUISPACED"
-        _is_pois = self._result.get("scan_type") == "POISSON"
+        _is_eq   = self._result.get("scan_type") == SCAN_EQUISPACED
+        _is_pois = self._result.get("scan_type") == SCAN_POISSON
         _has_ref = self._result.get("reference_image") is not None
         _masked_ok = (_is_eq or _is_pois) and _has_ref
         self._btn_center.setVisible(_is_eq and _has_ref)
@@ -355,13 +366,13 @@ class ReconTab(QWidget):
         self._axes_images.clear()
         stype = self._result.get("scan_type", "")
 
-        if stype == "BAND" or stype == "POISSON":
+        if stype == SCAN_BAND or stype == SCAN_POISSON:
             self._draw_nufft()
-        elif stype == "FULLY_SAMPLED":
+        elif stype == SCAN_FULLY_SAMPLED:
             self._draw_fullysamp()
-        elif stype == "EQUISPACED":
+        elif stype == SCAN_EQUISPACED:
             self._draw_equispaced()
-        elif stype == "RETRO_UNDERSAMPLE":
+        elif stype == SCAN_RETRO_UNDERSAMPLE:
             self._draw_retro()
         elif self._result.get("combined_img") is not None:
             self._draw_nufft()          # generic NUFFT-RSS / CS result
@@ -551,12 +562,6 @@ class ReconTab(QWidget):
         for ax in axes.ravel():
             ax.axis("off") if not ax.has_data() else None
 
-        # Second matplotlib figure: all coils
-        if coil_imgs is not None:
-            arr = np.squeeze(coil_imgs)
-            if arr.ndim == 3:
-                self._draw_coil_grid_popout(arr)
-
     def _draw_fullysamp(self) -> None:
         r = self._result
         image_rss      = r.get("image_rss")
@@ -626,101 +631,6 @@ class ReconTab(QWidget):
         for ax in np.array(axes_row0).ravel():
             ax.axis("off") if not ax.has_data() else None
 
-    def _draw_grappa(self) -> None:
-        r = self._result
-        grappa_img  = r.get("grappa_image")
-        zf_img      = r.get("zf_image")
-        ref_img     = r.get("reference_image")
-        grappa_ksp  = r.get("grappa_kspace_rss")        # pre-computed 2-D RSS
-        under_ksp   = r.get("undersampled_kspace_rss")  # pre-computed 2-D RSS
-        rmse        = r.get("rmse")
-        psnr        = r.get("psnr")
-        ssim_val    = r.get("ssim")
-        actual_r    = r.get("actual_r", 4)
-
-        def n01(x):
-            mn, mx = x.min(), x.max()
-            return (x - mn) / (mx - mn + 1e-12)
-
-        # Shared normalization to the reference 95th percentile (see
-        # _draw_equispaced).
-        if ref_img is not None:
-            ref_p95 = float(np.percentile(np.abs(ref_img).ravel(), 95)) + 1e-12
-            def n01_img(x):
-                return x / ref_p95
-        else:
-            n01_img = n01
-
-        axes = self._fig.subplots(2, 3)
-
-        if grappa_img is not None:
-            g = n01_img(grappa_img)
-            gd = np.rot90(g)
-            im = axes[0, 0].imshow(gd, cmap="gray", aspect="auto")
-            lbl = f"GRAPPA (R={actual_r:.2f}×)"
-            if rmse:
-                lbl += f"\nRMSE={rmse:.4f}  PSNR={psnr:.1f}dB"
-                if ssim_val is not None:
-                    lbl += f"  SSIM={ssim_val:.4f}"
-            axes[0, 0].set_title(lbl, fontsize=9)
-            self._add_cbar(axes[0, 0], im)
-            self._axes_images.append((axes[0, 0], im, gd, True))
-
-        if ref_img is not None:
-            rn = n01_img(ref_img)
-            rnd = np.rot90(rn)
-            im2 = axes[0, 1].imshow(rnd, cmap="gray", aspect="auto")
-            axes[0, 1].set_title("Fully-Sampled Reference")
-            self._add_cbar(axes[0, 1], im2)
-            self._axes_images.append((axes[0, 1], im2, rnd, True))
-
-            if grappa_img is not None:
-                diff = np.rot90(np.abs(g - rn))
-                im3 = axes[0, 2].imshow(diff, cmap="gray", aspect="auto",
-                                        vmin=0, vmax=0.1)
-                axes[0, 2].set_title("Absolute Difference")
-                self._add_cbar(axes[0, 2], im3)
-                self._axes_images.append((axes[0, 2], im3, diff, False))
-        else:
-            if zf_img is not None:
-                zn = n01_img(zf_img)
-                znd = np.rot90(zn)
-                im2 = axes[0, 1].imshow(znd, cmap="gray", aspect="auto")
-                axes[0, 1].set_title("Zero-Fill")
-                self._add_cbar(axes[0, 1], im2)
-                self._axes_images.append((axes[0, 1], im2, znd, True))
-            axes[0, 2].axis("off")
-
-        if under_ksp is not None:
-            # under_ksp is already a 2-D float32 RSS magnitude
-            kd = np.rot90(np.log(under_ksp + 1e-9))
-            im4 = axes[1, 0].imshow(kd, cmap="gray", aspect="auto")
-            axes[1, 0].set_title("Undersampled K-space (log)")
-            self._add_cbar(axes[1, 0], im4)
-            self._axes_images.append((axes[1, 0], im4, kd, False))
-
-        if grappa_ksp is not None:
-            # grappa_ksp is already a 2-D float32 RSS magnitude
-            kg = np.rot90(np.log(grappa_ksp + 1e-9))
-            im5 = axes[1, 1].imshow(kg, cmap="gray", aspect="auto")
-            axes[1, 1].set_title("GRAPPA K-space (log)")
-            self._add_cbar(axes[1, 1], im5)
-            self._axes_images.append((axes[1, 1], im5, kg, False))
-
-        axes[1, 2].axis("off")
-        if rmse is not None:
-            metric_text = f"Metrics\n\nRMSE : {rmse:.4f}\nPSNR : {psnr:.2f} dB"
-            if ssim_val is not None:
-                metric_text += f"\nSSIM : {ssim_val:.4f}"
-            axes[1, 2].text(
-                0.1, 0.5,
-                metric_text,
-                transform=axes[1, 2].transAxes, fontsize=13, va="center",
-            )
-
-        for ax in axes.ravel():
-            ax.axis("off") if not ax.has_data() else None
-
     def _draw_equispaced(self) -> None:
         r = self._result
         method      = r.get("method", "grappa")
@@ -735,16 +645,7 @@ class ReconTab(QWidget):
         ssim_val    = r.get("ssim")
         actual_r    = r.get("actual_r", 4)
 
-        method_label = {
-            "grappa":        "GRAPPA",
-            "sense":         "Pure SENSE",
-            "sense_cs":      "CS-SENSE",
-            "espirit":       "ESPIRiT (BART)",
-            "espirit_l1":    "ESPIRiT+L1 (BART)",
-            "espirit_l2":    "ESPIRiT+L2 (BART)",
-            "espirit_tv":    "ESPIRiT+TV (BART)",
-            "espirit_l1wav": "ESPIRiT+L1-Wav (BART)",
-        }.get(method, method.upper())
+        method_label = _method_display_label(r, method)
         ksp_title    = f"{method_label} K-space (log)" if method == "grappa" else "Recon K-space (log)"
 
         def n01(x):
@@ -880,15 +781,13 @@ class ReconTab(QWidget):
         for ax in axes.ravel():
             ax.axis("off") if not ax.has_data() else None
 
-    # keep old name as alias for any code that may still reference it
-    _draw_grappa = _draw_equispaced
 
     # ─── Equispaced post-hoc alignment (Center / Crop) ────────────────────────
 
     def _primary_image_key(self) -> str:
         """Result-dict key holding the primary reconstructed image for this tab
         (``combined_img`` for the NUFFT/Poisson layout, ``grappa_image`` else)."""
-        return "combined_img" if self._result.get("scan_type") == "POISSON" else "grappa_image"
+        return "combined_img" if self._result.get("scan_type") == SCAN_POISSON else "grappa_image"
 
     def _capture_eq_base(self) -> None:
         """Store pristine copies so the toggles can be (re)composed freely."""
@@ -926,7 +825,7 @@ class ReconTab(QWidget):
     def _apply_masked_transforms(self) -> None:
         """Dispatch the masked-metrics recompute. Poisson has no Center/Crop, so
         it uses a dedicated ROI-only path; equispaced composes with its toggles."""
-        if self._result.get("scan_type") == "POISSON":
+        if self._result.get("scan_type") == SCAN_POISSON:
             self._apply_poisson_masked()
         else:
             self._apply_eq_transforms()
@@ -1094,25 +993,14 @@ class ReconTab(QWidget):
 
     @staticmethod
     def _calc_metrics(recon: np.ndarray, ref: np.ndarray):
-        from skimage.metrics import structural_similarity as _ssim
+        from processing.imaging import metrics_vs_reference
 
         if recon.shape != ref.shape:
             from scipy.ndimage import zoom
             zf = (recon.shape[0] / ref.shape[0], recon.shape[1] / ref.shape[1])
             ref = zoom(ref, zf, order=1)
-        # Normalize both images by the reference's 95th percentile (shared,
-        # outlier-robust scale), consistent with the difference map.
-        scale = float(np.percentile(np.abs(ref).ravel(), 95)) + 1e-12
-        g = recon / scale
-        rr = ref / scale
-        diff = g - rr
-        rmse = float(np.sqrt(np.mean(diff ** 2)))
-        psnr = float(20.0 * np.log10(1.0 / (rmse + 1e-12)))
-        try:
-            ss = float(_ssim(g, rr, data_range=1.0))
-        except Exception:
-            ss = None
-        return rmse, psnr, ss
+        m = metrics_vs_reference(recon, ref)
+        return m["rmse"], m["psnr"], m["ssim"]
 
     def _draw_retro(self) -> None:
         """Display layout for retrospective undersampling simulator results."""
@@ -1190,18 +1078,7 @@ class ReconTab(QWidget):
             axes[0, 2].set_ylabel(axis_ylabel)
 
         # ── Row 1: Reconstructed | Difference | Metrics ───────────────────────
-        method_label = {
-            "none":          "ZF only",
-            "grappa":        "GRAPPA",
-            "ggrappa":       "gGRAPPA",
-            "sense":         "Pure SENSE",
-            "sense_cs":      "CS-SENSE",
-            "espirit":       "ESPIRiT (BART)",
-            "espirit_l1":    "ESPIRiT+L1 (BART)",
-            "espirit_l2":    "ESPIRiT+L2 (BART)",
-            "espirit_tv":    "ESPIRiT+TV (BART)",
-            "espirit_l1wav": "ESPIRiT+L1-Wav (BART)",
-        }.get(method, method)
+        method_label = _method_display_label(r, method)
 
         if recon_img is not None and method != "none":
             d3 = np.rot90(n01_img(recon_img))
@@ -1304,10 +1181,6 @@ class ReconTab(QWidget):
 
         for ax in axes.ravel():
             ax.axis("off") if not ax.has_data() else None
-
-    def _draw_coil_grid_popout(self, arr: np.ndarray) -> None:
-        """Register a coil-grid figure (opened in a separate window on demand)."""
-        self._coil_arr = arr   # store for the "Show all coils" button if desired
 
     # ─── W/L update ──────────────────────────────────────────────────────────
 

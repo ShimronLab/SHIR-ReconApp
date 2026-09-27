@@ -519,32 +519,16 @@ def reconstruct_retro(
     # ── 7. Metrics & difference image ─────────────────────────────────────────
     diff_image = None
     if recon_image is not None:
-        # Normalize BOTH images by the reference's (fully-sampled) 95th
-        # percentile, so the metrics and the difference map reflect true
-        # intensity error on one shared, outlier-robust scale.
-        scale = float(np.percentile(np.abs(fully_sampled_image).ravel(), 95)) + 1e-12
-        r_n  = recon_image.astype(float) / scale
-        fs_n = fully_sampled_image.astype(float) / scale
-        diff = r_n - fs_n
-        diff_image = np.abs(diff).astype(np.float32)
-        rmse = float(np.sqrt(np.mean(diff ** 2)))
-        psnr = float(20.0 * np.log10(1.0 / (rmse + 1e-12)))
-        ssim = float(_ssim(r_n, fs_n, data_range=1.0))
-        log(f"  RMSE={rmse:.4f}  PSNR={psnr:.2f} dB  SSIM={ssim:.4f}")
+        from .imaging import metrics_vs_reference
+        m = metrics_vs_reference(recon_image, fully_sampled_image, with_diff=True)
+        diff_image = m["diff"]
+        rmse, psnr, ssim = m["rmse"], m["psnr"], m["ssim"]
+        _ssim_txt = f"{ssim:.4f}" if ssim is not None else "n/a"
+        log(f"  RMSE={rmse:.4f}  PSNR={psnr:.2f} dB  SSIM={_ssim_txt}")
 
-    method_label = {
-        "none":           "ZF only",
-        "grappa":         "GRAPPA",
-        "ggrappa":        "gGRAPPA (PyTorch)",
-        "sense":          "Pure SENSE",
-        "sense_cs":       "CS-SENSE",
-        "espirit":        "ESPIRiT (BART)",
-        "espirit_l1":     "ESPIRiT+L1 (BART)",
-        "espirit_l2":     "ESPIRiT+L2 (BART)",
-        "espirit_tv":     "ESPIRiT+TV (BART)",
-        "espirit_l1wav":  "ESPIRiT+L1-Wav (BART)",
-    }.get(recon_method, recon_method)
-    log(f"[Retro Sim] Done — {mask_type.upper()}, axis={axis_label}, R={actual_r:.2f}×, method={method_label}")
+    from .constants import method_label as _mlabel
+    log(f"[Retro Sim] Done — {mask_type.upper()}, axis={axis_label}, "
+        f"R={actual_r:.2f}×, method={_mlabel(recon_method)}")
 
     return {
         "pe_mask":                  pe_mask,

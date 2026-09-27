@@ -50,7 +50,15 @@ from .folder_panel   import FolderPanel
 from .params_panel   import ParamsPanel
 from .results_viewer import ResultsViewer
 from .report_generator import generate_pdf
-from processing.constants import JobAborted
+from processing.constants import JobAborted, method_label
+from processing.constants import (
+    SCAN_BAND,
+    SCAN_EQUISPACED,
+    SCAN_FULLY_SAMPLED,
+    SCAN_POISSON,
+    SCAN_RETRO_UNDERSAMPLE,
+    SCAN_UNKNOWN,
+)
 from resources import resource_path
 from version import __version__
 
@@ -116,7 +124,7 @@ class ReconWorker(QObject):
     def run(self) -> None:
         job    = self._job
         params = self._params
-        stype  = job.get("scan_type", "UNKNOWN")
+        stype  = job.get("scan_type", SCAN_UNKNOWN)
 
         def cb(msg: str) -> None:
             # Stop support: every recon function reports progress between its
@@ -145,7 +153,7 @@ class ReconWorker(QObject):
                f"(mode={recon_backend.get_backend_mode()}, "
                f"BART available={recon_backend.bart_available()})")
 
-            if stype == "BAND":
+            if stype == SCAN_BAND:
                 from processing.band_recon import reconstruct_band
                 result = reconstruct_band(
                     dat_path       = job["dat_path"],
@@ -160,7 +168,7 @@ class ReconWorker(QObject):
                     progress_cb    = cb,
                 )
 
-            elif stype == "FULLY_SAMPLED":
+            elif stype == SCAN_FULLY_SAMPLED:
                 from processing.fullysamp_recon import reconstruct_fullysamp
                 result = reconstruct_fullysamp(
                     dat_path    = job["dat_path"],
@@ -174,7 +182,7 @@ class ReconWorker(QObject):
                     slice_selector_cb = slice_cb,
                 )
 
-            elif stype == "EQUISPACED":
+            elif stype == SCAN_EQUISPACED:
                 from processing.equispaced_recon import reconstruct_equispaced
                 ref_path = job.get("reference_dat_path")
                 result = reconstruct_equispaced(
@@ -201,7 +209,7 @@ class ReconWorker(QObject):
                     mask_fallback_cb    = self._request_mask_fallback,
                 )
 
-            elif stype == "POISSON":
+            elif stype == SCAN_POISSON:
                 from processing.poisson_recon import reconstruct_poisson
                 result = reconstruct_poisson(
                     dat_path           = job["dat_path"],
@@ -219,7 +227,7 @@ class ReconWorker(QObject):
                     progress_cb        = cb,
                 )
 
-            elif stype == "RETRO_UNDERSAMPLE":
+            elif stype == SCAN_RETRO_UNDERSAMPLE:
                 from processing.retro_undersample import reconstruct_retro
                 result = reconstruct_retro(
                     dat_path        = job["dat_path"],
@@ -271,32 +279,26 @@ class ReconWorker(QObject):
 
             result["scan_type"] = stype
             result["label"]     = _make_label(job)
+            # Record which engine actually ran (BART vs sigpy) for the log,
+            # PDF parameter summary, and engine-aware display labels.
+            result["recon_engine"] = recon_backend.active_backend_label()
             # Append recon mode suffix for Equispaced tabs
-            if stype == "EQUISPACED":
+            if stype == SCAN_EQUISPACED:
                 method = result.get("method", "grappa")
-                suffix_map = {
-                    "grappa":     " (GRAPPA)",
-                    "sense":      " (SENSE)",
-                    "sense_cs":   " (CS-SENSE)",
-                    "espirit":    " (ESPIRiT)",
-                    "espirit_l1": " (ESPIRiT-L1)",
-                }
-                result["label"] += suffix_map.get(method, "")
+                result["label"] += f" ({method_label(method)})"
             # Append recon mode suffix for Poisson tabs
-            if stype == "POISSON":
+            if stype == SCAN_POISSON:
                 mode = result.get("recon_mode", "pics")
                 suffix = " (ZF)" if mode == "zerofill" else " (CS)"
                 result["label"] += suffix
-            if stype == "RETRO_UNDERSAMPLE":
+            if stype == SCAN_RETRO_UNDERSAMPLE:
                 mtype  = result.get("mask_type", "equispaced").upper()
                 actual = result.get("actual_r", 0)
                 method = result.get("method", "none")
-                suffix_map = {"none": "", "grappa": " GRAPPA", "ggrappa": " gGRAPPA",
-                              "sense": " SENSE", "sense_cs": " CS-SENSE",
-                              "espirit": " ESPIRiT", "espirit_l1": " ESPIRiT-L1"}
-                result["label"] += f" [{mtype} R={actual:.1f}×{suffix_map.get(method, '')}]"
-            if stype not in ("BAND", "FULLY_SAMPLED", "EQUISPACED", "POISSON",
-                             "RETRO_UNDERSAMPLE"):
+                msuffix = "" if method == "none" else f" {method_label(method)}"
+                result["label"] += f" [{mtype} R={actual:.1f}×{msuffix}]"
+            if stype not in (SCAN_BAND, SCAN_FULLY_SAMPLED, SCAN_EQUISPACED, SCAN_POISSON,
+                             SCAN_RETRO_UNDERSAMPLE):
                 suffix_map = {"nufft": " (NUFFT RSS)", "cs": " (CS)",
                               "cartesian": " (RSS)"}
                 result["label"] += suffix_map.get(result.get("recon_path"), " (RSS)")
@@ -327,13 +329,13 @@ def _make_label(job: Dict) -> str:
     stype      = job.get("scan_type", "")
     bidx       = job.get("band_idx")
     name       = Path(job.get("dat_path", "")).stem
-    if stype == "BAND" and bidx is not None:
+    if stype == SCAN_BAND and bidx is not None:
         base = f"{folder_key} — Band {bidx}"
-    elif stype == "EQUISPACED":
+    elif stype == SCAN_EQUISPACED:
         base = f"{folder_key} — Equispaced"
-    elif stype == "RETRO_UNDERSAMPLE":
+    elif stype == SCAN_RETRO_UNDERSAMPLE:
         base = f"{folder_key} — Retro Sim"
-    elif stype == "UNKNOWN":
+    elif stype == SCAN_UNKNOWN:
         # Several unknown files may share a folder — keep the stem in the label.
         base = f"{folder_key} — {name}"
     else:
@@ -940,7 +942,7 @@ def _attach_references(jobs: List[Dict]) -> List[Dict]:
     for j in jobs:
         dat_dir = str(Path(j["dat_path"]).parent)
         fname   = Path(j["dat_path"]).name
-        if j["scan_type"] == "FULLY_SAMPLED":
+        if j["scan_type"] == SCAN_FULLY_SAMPLED:
             fs_map[dat_dir] = j["dat_path"]
         elif _SIEMENS_SE.search(fname) and not _GRAPPA_SE_EXCLUSION.search(fname):
             siemens_se_map[dat_dir] = j["dat_path"]
@@ -967,7 +969,7 @@ def _attach_references(jobs: List[Dict]) -> List[Dict]:
         # A user-set reference (folder-panel "Set reference") is never overwritten.
         if j.get("reference_override"):
             continue
-        if j["scan_type"] == "EQUISPACED":
+        if j["scan_type"] == SCAN_EQUISPACED:
             dat_dir = str(Path(j["dat_path"]).parent)
             fname   = Path(j["dat_path"]).name
             if _SIEMENS_GRAPPA.search(fname):
@@ -978,7 +980,7 @@ def _attach_references(jobs: List[Dict]) -> List[Dict]:
                 ref = fs_map.get(dat_dir) or siemens_se_map.get(dat_dir)
             if ref:
                 j["reference_dat_path"] = ref
-        elif j["scan_type"] == "POISSON":
+        elif j["scan_type"] == SCAN_POISSON:
             # Poisson-disc is non-Cartesian; just take any fully-sampled in the
             # folder (custom preferred, else the Siemens SE) for comparison.
             dat_dir = str(Path(j["dat_path"]).parent)

@@ -45,6 +45,13 @@ from PyQt5.QtWidgets import (
     QWidget,
 )
 
+from processing.constants import (
+    SCAN_EQUISPACED,
+    SCAN_FULLY_SAMPLED,
+    SCAN_POISSON,
+    SCAN_RETRO_UNDERSAMPLE,
+    SCAN_UNKNOWN,
+)
 from processing.utils import (
     ScanType,
     auto_detect_scan_type,
@@ -55,9 +62,9 @@ from processing.utils import (
 
 # Scan types whose recon supports slice selection (accept slice_selector_cb).
 # Band/Poisson are single-slice NUFFT recons — no per-slice UI.
-_SLICE_CAPABLE = {"FULLY_SAMPLED", "EQUISPACED", "UNKNOWN", "RETRO_UNDERSAMPLE"}
+_SLICE_CAPABLE = {SCAN_FULLY_SAMPLED, SCAN_EQUISPACED, SCAN_UNKNOWN, SCAN_RETRO_UNDERSAMPLE}
 # Scan types that compare against a fully-sampled reference.
-_REFERENCE_CONSUMERS = {"EQUISPACED", "POISSON"}
+_REFERENCE_CONSUMERS = {SCAN_EQUISPACED, SCAN_POISSON}
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -90,10 +97,10 @@ _JSON_NAMES = {
 # in main_window routes on. Band is omitted: it needs a band index + Bands.json
 # that a lone/unknown file does not have.
 _RECON_AS_OPTIONS = [
-    ("Generic fallback (auto)", "UNKNOWN"),
-    ("Fully-Sampled (IFFT + RSS / SENSE)", "FULLY_SAMPLED"),
-    ("Equispaced (GRAPPA / SENSE / …)", "EQUISPACED"),
-    ("Poisson-Disc CS (needs trajectory JSON)", "POISSON"),
+    ("Generic fallback (auto)", SCAN_UNKNOWN),
+    ("Fully-Sampled (IFFT + RSS / SENSE)", SCAN_FULLY_SAMPLED),
+    ("Equispaced (GRAPPA / SENSE / …)", SCAN_EQUISPACED),
+    ("Poisson-Disc CS (needs trajectory JSON)", SCAN_POISSON),
 ]
 _RECON_AS_LABELS = {key: label for label, key in _RECON_AS_OPTIONS}
 
@@ -153,7 +160,6 @@ class FolderPanel(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self._folder_data: List[Dict] = []   # internal model
         self._nslices_cache: Dict[str, int] = {}   # dat_path → slice count
 
         # ── Top buttons ──────────────────────────────────────────────────────
@@ -214,7 +220,6 @@ class FolderPanel(QWidget):
     # ─── Folder loading ───────────────────────────────────────────────────────
 
     def _on_open_folder(self) -> None:
-        self._folder_data.clear()
         self._tree.clear()
         self._add_folder_dialog()
 
@@ -325,7 +330,7 @@ class FolderPanel(QWidget):
             return
 
         menu = QMenu(self)
-        stype = data.get("scan_type", "UNKNOWN")
+        stype = data.get("scan_type", SCAN_UNKNOWN)
 
         # ── Reconstruct as ▸ (override the recon type; mainly for Unknown) ────
         submenu = menu.addMenu("Reconstruct as")
@@ -471,7 +476,7 @@ class FolderPanel(QWidget):
 
         def rec(node):
             d = node.data(0, Qt.UserRole)
-            if (d and d.get("scan_type") == "FULLY_SAMPLED"
+            if (d and d.get("scan_type") == SCAN_FULLY_SAMPLED
                     and d.get("slice_idx") is None):
                 p = d["dat_path"]
                 if p not in seen:
@@ -605,7 +610,7 @@ class FolderPanel(QWidget):
     def _on_simulate(self) -> None:
         """Collect only FULLY_SAMPLED jobs and emit them as RETRO_UNDERSAMPLE."""
         all_jobs = self._collect_jobs()
-        fs_jobs  = [j for j in all_jobs if j.get("scan_type") == "FULLY_SAMPLED"]
+        fs_jobs  = [j for j in all_jobs if j.get("scan_type") == SCAN_FULLY_SAMPLED]
         if not fs_jobs:
             QMessageBox.warning(
                 self, "No fully-sampled data",
@@ -613,5 +618,5 @@ class FolderPanel(QWidget):
             )
             return
         for j in fs_jobs:
-            j["scan_type"] = "RETRO_UNDERSAMPLE"
+            j["scan_type"] = SCAN_RETRO_UNDERSAMPLE
         self.simulate_requested.emit(fs_jobs)

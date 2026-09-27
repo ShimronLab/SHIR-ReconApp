@@ -11,6 +11,16 @@ import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.backends.backend_pdf import PdfPages
 
+from processing.constants import method_display_label as _method_display_label
+from processing.constants import (
+    SCAN_BAND,
+    SCAN_EQUISPACED,
+    SCAN_FULLY_SAMPLED,
+    SCAN_POISSON,
+    SCAN_RETRO_UNDERSAMPLE,
+    SCAN_UNKNOWN,
+)
+
 
 def _norm(img: np.ndarray) -> np.ndarray:
     """Normalise array to [0, 1] for display."""
@@ -111,13 +121,13 @@ def _add_recon_page(pdf: PdfPages, result: Dict[str, Any], title: str) -> None:
     _set_page_rotation(result)   # applies to every image drawn for this page
     stype = result.get("scan_type", "Unknown")
 
-    if stype == "BAND" or stype == "POISSON":
+    if stype == SCAN_BAND or stype == SCAN_POISSON:
         _page_nufft(pdf, result, title)
-    elif stype == "FULLY_SAMPLED":
+    elif stype == SCAN_FULLY_SAMPLED:
         _page_fullysamp(pdf, result, title)
-    elif stype == "EQUISPACED":
+    elif stype == SCAN_EQUISPACED:
         _page_equispaced(pdf, result, title)
-    elif stype == "RETRO_UNDERSAMPLE":
+    elif stype == SCAN_RETRO_UNDERSAMPLE:
         _page_retro(pdf, result, title)
     elif result.get("combined_img") is not None:
         _page_nufft(pdf, result, title)          # generic NUFFT-RSS / CS result
@@ -312,116 +322,6 @@ def _page_fullysamp(pdf: PdfPages, result: Dict[str, Any], title: str) -> None:
                                 orient=lambda a: np.rot90(_norm(a)))
 
 
-def _page_grappa(pdf: PdfPages, result: Dict[str, Any], title: str) -> None:
-    """Page for GRAPPA reconstruction (mirrors notebook comparison figure)."""
-    grappa_img  = result.get("grappa_image")
-    zf_img      = result.get("zf_image")
-    ref_img     = result.get("reference_image")
-    grappa_ksp  = result.get("grappa_kspace_rss")        # pre-computed 2-D RSS
-    under_ksp   = result.get("undersampled_kspace_rss")  # pre-computed 2-D RSS
-    rmse        = result.get("rmse")
-    psnr        = result.get("psnr")
-    ssim_val    = result.get("ssim")
-    actual_r    = result.get("actual_r", 4)
-
-    wl_min     = result.get("_wl_min", 0)
-    wl_max     = result.get("_wl_max", 100)
-    brightness = result.get("_brightness", 1.0)
-
-    has_ref = ref_img is not None
-
-    def norm01(x):
-        mn, mx = x.min(), x.max()
-        return (x - mn) / (mx - mn + 1e-12)
-
-    # Shared normalisation: when a reference exists, divide BOTH the recon and the
-    # reference by the reference's 95th percentile (outlier-robust, one common
-    # scale) so the difference map shows true intensity error. Min-max is only a
-    # fallback when there is no reference to compare against.
-    if has_ref:
-        _ref_p95 = float(np.percentile(np.abs(ref_img).ravel(), 95)) + 1e-12
-        def norm_img(x):
-            return x / _ref_p95
-    else:
-        norm_img = norm01
-
-    nrows, ncols = (2, 3)
-    fig, axes = plt.subplots(nrows, ncols, figsize=(18, 12))
-    fig.suptitle(title, fontsize=12, fontweight="bold")
-
-    if grappa_img is not None:
-        g = norm_img(grappa_img)
-        rm = f"  RMSE={rmse:.4f}  PSNR={psnr:.1f}dB" if rmse else ""
-        if rmse and ssim_val is not None:
-            rm += f"  SSIM={ssim_val:.4f}"
-        _imshow_adjusted(axes[0, 0], g.T, "gray", wl_min, wl_max, brightness, is_main=True)
-        axes[0, 0].set_title(f"GRAPPA (R={actual_r:.3f}×){rm}")
-
-    if has_ref:
-        r = norm_img(ref_img)
-        _imshow_adjusted(axes[0, 1], r.T, "gray", wl_min, wl_max, brightness, is_main=True)
-        axes[0, 1].set_title("Fully-Sampled Reference")
-
-        abs_diff = np.abs(g - r).T if grappa_img is not None else None
-        if abs_diff is not None:
-            _imshow_adjusted(axes[0, 2], abs_diff, "gray", wl_min, wl_max, brightness, is_main=False)
-            axes[0, 2].set_title("Absolute Difference")
-    else:
-        if zf_img is not None:
-            _imshow_adjusted(axes[0, 1], norm01(zf_img).T, "gray", wl_min, wl_max, brightness, is_main=True)
-            axes[0, 1].set_title("Zero-Fill Reconstruction")
-        axes[0, 2].axis("off")
-
-    if under_ksp is not None:
-        # under_ksp is already a 2-D float32 RSS magnitude
-        _imshow_adjusted(axes[1, 0], np.log(under_ksp.T + 1e-9), "gray",
-                         wl_min, wl_max, brightness, is_main=False)
-        axes[1, 0].set_title("Undersampled K-space (log RSS)")
-
-    if grappa_ksp is not None:
-        # grappa_ksp is already a 2-D float32 RSS magnitude
-        _imshow_adjusted(axes[1, 1], np.log(grappa_ksp.T + 1e-9), "gray",
-                         wl_min, wl_max, brightness, is_main=False)
-        axes[1, 1].set_title("GRAPPA K-space (log RSS)")
-
-    axes[1, 2].axis("off")
-    params = result.get("params", {})
-    kr = params.get("kernel_size", (None, None))
-    grappa_lamda = params.get("lamda")
-    acs   = params.get("acs_lines")
-    r_fac = params.get("r_factor")
-
-    info_lines = ["Parameters\n"]
-    if r_fac is not None:
-        info_lines.append(f"R-factor   : {r_fac}")
-    if acs is not None:
-        info_lines.append(f"ACS lines  : {acs}")
-    if kr[0] is not None:
-        info_lines.append(f"Kernel size: {kr[0]} × {kr[1]}")
-    if grappa_lamda is not None:
-        info_lines.append(f"λ (lamda)  : {grappa_lamda}")
-    if rmse is not None:
-        info_lines.append(f"\nMetrics\n")
-        info_lines.append(f"RMSE : {rmse:.4f}")
-        info_lines.append(f"PSNR : {psnr:.2f} dB")
-        if ssim_val is not None:
-            info_lines.append(f"SSIM : {ssim_val:.4f}")
-
-    axes[1, 2].text(
-        0.1, 0.6,
-        "\n".join(info_lines),
-        transform=axes[1, 2].transAxes,
-        fontsize=13, va="top",
-    )
-
-    for ax in axes.ravel():
-        ax.set_xlabel(""); ax.set_ylabel("")
-
-    plt.tight_layout(rect=[0, 0, 1, 0.95])
-    pdf.savefig(fig, dpi=100)
-    plt.close(fig)
-
-
 def _page_equispaced(pdf: PdfPages, result: Dict[str, Any], title: str) -> None:
     """Page for equispaced under-sampled reconstruction (GRAPPA / SENSE / CS-SENSE)."""
     method      = result.get("method", "grappa")
@@ -440,17 +340,7 @@ def _page_equispaced(pdf: PdfPages, result: Dict[str, Any], title: str) -> None:
     wl_max     = result.get("_wl_max", 100)
     brightness = result.get("_brightness", 1.0)
 
-    method_label = {
-        "grappa":         "GRAPPA",
-        "grappa_sense":   "GRAPPA+SENSE",
-        "sense":          "Pure SENSE",
-        "sense_cs":       "CS-SENSE",
-        "espirit":        "ESPIRiT (BART)",
-        "espirit_l1":     "ESPIRiT+L1 (BART)",
-        "espirit_l2":     "ESPIRiT+L2 (BART)",
-        "espirit_tv":     "ESPIRiT+TV (BART)",
-        "espirit_l1wav":  "ESPIRiT+L1-Wav (BART)",
-    }.get(method, method.upper())
+    method_label = _method_display_label(result, method)
     ksp_title    = f"{method_label} K-space (log RSS)" if method in ("grappa", "grappa_sense") else "Recon K-space (log RSS)"
 
     has_ref  = ref_img is not None
@@ -606,17 +496,7 @@ def _page_retro(pdf: PdfPages, result: Dict[str, Any], title: str) -> None:
     wl_max     = result.get("_wl_max",    100)
     brightness = result.get("_brightness", 1.0)
 
-    method_label = {
-        "none":          "ZF only",
-        "grappa":        "GRAPPA",
-        "sense":         "Pure SENSE",
-        "sense_cs":      "CS-SENSE",
-        "espirit":       "ESPIRiT (BART)",
-        "espirit_l1":    "ESPIRiT+L1 (BART)",
-        "espirit_l2":    "ESPIRiT+L2 (BART)",
-        "espirit_tv":    "ESPIRiT+TV (BART)",
-        "espirit_l1wav": "ESPIRiT+L1-Wav (BART)",
-    }.get(method, method)
+    method_label = _method_display_label(result, method)
 
     def norm01(x):
         mn, mx = x.min(), x.max()

@@ -823,18 +823,8 @@ def reconstruct_equispaced(
         rmse, psnr, ssim  = _cmp["rmse"], _cmp["psnr"], _cmp["ssim"]
         reference_warning = _cmp["reference_warning"]
 
-    method_label = {
-        "grappa":         "GRAPPA",
-        "grappa_sense":   "GRAPPA+SENSE",
-        "sense":          "Pure SENSE",
-        "sense_cs":       "CS-SENSE",
-        "espirit":        "ESPIRiT (BART)",
-        "espirit_l1":     "ESPIRiT+L1 (BART)",
-        "espirit_l2":     "ESPIRiT+L2 (BART)",
-        "espirit_tv":     "ESPIRiT+TV (BART)",
-        "espirit_l1wav":  "ESPIRiT+L1-Wav (BART)",
-    }.get(method, method)
-    log(f"{method_label} reconstruction complete.")
+    from .constants import method_label as _mlabel
+    log(f"{_mlabel(method)} reconstruction complete.")
 
     return {
         "undersampled_kspace_rss": undersampled_kspace_rss,

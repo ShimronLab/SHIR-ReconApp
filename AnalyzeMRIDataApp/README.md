@@ -59,7 +59,7 @@ app.py
         └── ReconWorker  (background QThread)
               ├── band_recon.py           (processing/)
               ├── fullysamp_recon.py      (processing/)
-              ├── grappa_recon.py         (processing/)
+              ├── equispaced_recon.py     (processing/)
               ├── poisson_recon.py        (processing/)
               ├── retro_undersample.py    (processing/)  ← simulator
               └── utils.py                (processing/)  ← BART, CFL I/O, trajectories

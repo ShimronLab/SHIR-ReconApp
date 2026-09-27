@@ -343,38 +343,6 @@ def make_bart_trajectory(
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Mask helper (ported from RestorebandBart.ipynb)
-# ─────────────────────────────────────────────────────────────────────────────
-
-def band_mask_from_traj(ktraj_xy: np.ndarray, Ny: int, Nx: int) -> np.ndarray:
-    """
-    Build a (Ny, Nx) binary uint8 mask from an (N, 2) or (2, N) trajectory.
-
-    Parameters
-    ----------
-    ktraj_xy : array-like, shape (N, 2) or (2, N)
-        Raw kx/ky trajectory samples.
-    Ny, Nx : int
-        Grid size (rows = ky, cols = kx).
-    """
-    ktraj = np.asarray(ktraj_xy, dtype=float)
-    if ktraj.shape[0] == 2 and ktraj.ndim == 2:
-        ktraj = ktraj.T            # ensure (N, 2)
-    kx_raw, ky_raw = ktraj[:, 0], ktraj[:, 1]
-    rmax = np.max(np.sqrt(kx_raw ** 2 + ky_raw ** 2))
-    kx_norm = kx_raw / (2.0 * rmax)
-    ky_norm = ky_raw / (2.0 * rmax)
-
-    # Map to grid indices (swap kx/ky → col/row)
-    ix = np.clip(np.round((ky_norm + 0.5) * (Nx - 1)).astype(int), 0, Nx - 1)
-    iy = np.clip(np.round((kx_norm + 0.5) * (Ny - 1)).astype(int), 0, Ny - 1)
-
-    mask = np.zeros((Ny, Nx), dtype=np.uint8)
-    np.add.at(mask, (iy, ix), 1)
-    return (mask > 0).astype(np.uint8)
-
-
-# ─────────────────────────────────────────────────────────────────────────────
 # Temp-dir context manager for BART intermediate files
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -424,24 +392,6 @@ _os_logger = _logging.getLogger(__name__)
 # ─────────────────────────────────────────────────────────────────────────────
 # Readout oversampling helpers
 # ─────────────────────────────────────────────────────────────────────────────
-
-def infer_expected_nx_from_traj(traj_json_path: str) -> Optional[int]:
-    """
-    Return the number of ADC samples per readout shot from a NUFFT trajectory JSON.
-
-    The JSON format is {shot_idx: [[kx0, ky0], [kx1, ky1], ...], ...}.
-    Returns the length of the first shot's sample list, or None on any error.
-    Use this to sanity-check that a trajectory JSON and a .dat file were
-    acquired together (same MATLAB run); if they disagree the trajectory is stale.
-    """
-    try:
-        with open(traj_json_path, "r") as f:
-            data = json.load(f)
-        first_key = next(iter(data))
-        return len(data[first_key])
-    except Exception:
-        return None
-
 
 def crop_readout_oversampling(
     kspace: np.ndarray,

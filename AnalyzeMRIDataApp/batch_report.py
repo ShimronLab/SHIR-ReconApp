@@ -43,7 +43,6 @@ matplotlib.use("Agg")  # headless backend for PDF generation
 import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.backends.backend_pdf import PdfPages
-from skimage.metrics import structural_similarity as _ssim
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Make local packages importable regardless of the current working directory
@@ -55,7 +54,11 @@ for _p in (str(_APP_DIR), str(_ROOT / "read_siemens_scans")):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
+from processing.constants import METHOD_LABELS                   # noqa: E402
 from processing.equispaced_recon import reconstruct_equispaced  # noqa: E402
+from processing.imaging import ifft2c as _ifft2c                 # noqa: E402
+from processing.imaging import metrics_vs_reference              # noqa: E402
+from processing.imaging import norm01 as _norm01                 # noqa: E402
 from processing.utils import ScanType, auto_detect_scan_type     # noqa: E402
 
 
@@ -73,17 +76,6 @@ UNDERSAMPLED_METHODS: List[str] = [
     "espirit_l1wav",
 ]
 
-METHOD_LABELS: Dict[str, str] = {
-    "grappa": "GRAPPA",
-    "grappa_sense": "GRAPPA+SENSE",
-    "sense": "Pure SENSE",
-    "espirit": "ESPIRiT",
-    "espirit_l1": "ESPIRiT+L1",
-    "espirit_l2": "ESPIRiT+L2",
-    "espirit_tv": "ESPIRiT+TV",
-    "espirit_l1wav": "ESPIRiT+L1-Wav",
-}
-
 
 def _log(msg: str) -> None:
     print(msg, flush=True)
@@ -92,14 +84,6 @@ def _log(msg: str) -> None:
 # ─────────────────────────────────────────────────────────────────────────────
 # TWIX helpers
 # ─────────────────────────────────────────────────────────────────────────────
-
-def _ifft2c(ks: np.ndarray) -> np.ndarray:
-    """Centred 2-D IFFT over axes 0 (readout) and 1 (phase)."""
-    return np.fft.ifftshift(
-        np.fft.ifft2(np.fft.fftshift(ks, axes=(0, 1)), axes=(0, 1)),
-        axes=(0, 1),
-    )
-
 
 def _probe_num_slices(dat_path: str) -> int:
     """Return the number of slices in a TWIX file (1 for single-slice 'my' data)."""
@@ -115,35 +99,11 @@ def _probe_num_slices(dat_path: str) -> int:
 # Metrics
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _norm01(x: np.ndarray) -> np.ndarray:
-    x = np.abs(np.asarray(x, dtype=float))
-    mn, mx = x.min(), x.max()
-    return (x - mn) / (mx - mn + 1e-12)
-
-
 def compute_metrics(recon: np.ndarray, reference: np.ndarray) -> Dict[str, float]:
-    """SSIM, NMSE and PSNR between a reconstruction and its reference.
-
-    Both images are normalised by the REFERENCE's 95th percentile (MRI standard).
-    This is outlier-robust (unlike dividing by the max) and puts recon and
-    reference on ONE shared intensity scale (unlike independent min-max, which
-    stretches each image separately and hides real intensity error). The 95th
-    percentile maps to 1.0, so PSNR/SSIM use the p95 white level as the peak —
-    matching the live viewer (results_viewer._masked_metrics) and the recon
-    backends (grappa_recon / equispaced_recon).
-    """
-    r_abs = np.abs(np.asarray(reference, dtype=float))
-    g_abs = np.abs(np.asarray(recon, dtype=float))
-    scale = float(np.percentile(r_abs.ravel(), 95)) + 1e-12
-    g = g_abs / scale
-    r = r_abs / scale
-    diff = g - r
-    mse = float(np.mean(diff ** 2))
-    rmse = float(np.sqrt(mse))
-    nmse = float(np.sum(diff ** 2) / (np.sum(r ** 2) + 1e-12))
-    psnr = float(20.0 * np.log10(1.0 / (rmse + 1e-12)))
-    ssim = float(_ssim(g, r, data_range=1.0))
-    return {"ssim": ssim, "nmse": nmse, "psnr": psnr, "rmse": rmse}
+    """SSIM / NMSE / PSNR / RMSE on the shared reference-p95 scale
+    (single definition in processing.imaging, same as the live viewer)."""
+    m = metrics_vs_reference(recon, reference)
+    return {"ssim": m["ssim"], "nmse": m["nmse"], "psnr": m["psnr"], "rmse": m["rmse"]}
 
 
 # ─────────────────────────────────────────────────────────────────────────────

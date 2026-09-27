@@ -114,7 +114,8 @@ def compare_to_reference(
     """
     log = log or _noop
     from scipy.ndimage import zoom
-    from skimage.metrics import structural_similarity as _ssim
+
+    from .imaging import metrics_vs_reference
 
     recon = np.abs(np.squeeze(recon_image)).astype(float)
     ref = np.abs(np.squeeze(reference_image)).astype(float)
@@ -145,19 +146,15 @@ def compare_to_reference(
         zf = (recon.shape[0] / ref.shape[0], recon.shape[1] / ref.shape[1])
         ref = zoom(ref, zf, order=1)
 
-    scale = float(np.percentile(np.abs(ref).ravel(), 95)) + 1e-12
-    g_n, r_n = recon / scale, ref / scale
-    diff = g_n - r_n
-    rmse = float(np.sqrt(np.mean(diff ** 2)))
-    nmse = float(np.sum(diff ** 2) / (np.sum(r_n ** 2) + 1e-12))
-    psnr = float(20.0 * np.log10(1.0 / (rmse + 1e-12)))
-    ssim = float(_ssim(g_n, r_n, data_range=1.0))
-    log(f"  RMSE={rmse:.4f}  NMSE={nmse:.4f}  PSNR={psnr:.2f} dB  SSIM={ssim:.4f}")
+    m = metrics_vs_reference(recon, ref)
+    _ssim_txt = f"{m['ssim']:.4f}" if m["ssim"] is not None else "n/a"
+    log(f"  RMSE={m['rmse']:.4f}  NMSE={m['nmse']:.4f}  "
+        f"PSNR={m['psnr']:.2f} dB  SSIM={_ssim_txt}")
     return {
         "reference_image":   ref,
-        "ssim":              ssim,
-        "nmse":              nmse,
-        "psnr":              psnr,
-        "rmse":              rmse,
+        "ssim":              m["ssim"],
+        "nmse":              m["nmse"],
+        "psnr":              m["psnr"],
+        "rmse":              m["rmse"],
         "reference_warning": warning,
     }
