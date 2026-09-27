@@ -150,7 +150,10 @@ Click **Stop** to cancel after the current job finishes.
 To simulate undersampling on an already-acquired fully-sampled dataset:
 1. Check one or more **Fully-Sampled** files in the tree.
 2. Configure the **Undersampling Simulator** group in the right panel (see [Parameter Reference](#parameter-reference)).
-3. Click **Simulate** in the toolbar.
+3. Click **Undersampling Simulator** in the toolbar.
+4. A confirmation dialog lists the checked fully-sampled scans (all pre-ticked).
+   **Untick any you don't want**, then click **Proceed** — each remaining scan
+   is undersampled with the current settings and gets its own result tab.
 
 The app retrospectively applies the chosen mask to the fully-sampled k-space and — optionally — runs a reconstruction, all without re-scanning.
 

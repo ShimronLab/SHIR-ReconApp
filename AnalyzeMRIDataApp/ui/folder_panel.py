@@ -36,6 +36,9 @@ from PyQt5.QtGui import QColor, QFont
 from PyQt5.QtWidgets import (
     QAbstractItemView,
     QApplication,
+    QCheckBox,
+    QDialog,
+    QDialogButtonBox,
     QFileDialog,
     QGroupBox,
     QHBoxLayout,
@@ -43,6 +46,7 @@ from PyQt5.QtWidgets import (
     QMenu,
     QMessageBox,
     QPushButton,
+    QScrollArea,
     QSizePolicy,
     QTreeWidget,
     QTreeWidgetItem,
@@ -156,6 +160,77 @@ def _find_json(dat_folder: Path, scan_type: ScanType) -> Optional[str]:
         if candidate.exists():
             return str(candidate)
     return None
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Undersampling-simulator target confirmation
+# ─────────────────────────────────────────────────────────────────────────────
+
+class _SimulateSelectDialog(QDialog):
+    """
+    Confirm which fully-sampled scans the undersampling simulator will process.
+
+    Shows one pre-ticked checkbox per candidate so the user can review the list
+    and untick any scan before running — the checked subset is returned by
+    ``selected_jobs()``.
+    """
+
+    def __init__(self, fs_jobs: List[Dict], parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Undersampling Simulator — select scans")
+        self.setMinimumWidth(420)
+        self._jobs = fs_jobs
+
+        layout = QVBoxLayout(self)
+        layout.addWidget(QLabel(
+            "Retrospectively undersample these fully-sampled scan(s) with the "
+            "current simulator settings.\nUntick any you don't want, then Proceed:"
+        ))
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        inner = QWidget()
+        inner_layout = QVBoxLayout(inner)
+        self._checkboxes: List[QCheckBox] = []
+        for job in fs_jobs:
+            name = Path(job.get("dat_path", "")).name
+            folder = job.get("folder_key", "")
+            cb = QCheckBox(f"{name}    ({folder})" if folder else name)
+            cb.setChecked(True)
+            cb.toggled.connect(self._update_ok_state)
+            self._checkboxes.append(cb)
+            inner_layout.addWidget(cb)
+        inner_layout.addStretch()
+        scroll.setWidget(inner)
+        layout.addWidget(scroll)
+
+        btn_row = QHBoxLayout()
+        btn_all  = QPushButton("Select All")
+        btn_none = QPushButton("Clear All")
+        btn_all.clicked.connect(lambda: self._set_all(True))
+        btn_none.clicked.connect(lambda: self._set_all(False))
+        btn_row.addWidget(btn_all)
+        btn_row.addWidget(btn_none)
+        btn_row.addStretch()
+        layout.addLayout(btn_row)
+
+        self._buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        self._buttons.button(QDialogButtonBox.Ok).setText("Proceed")
+        self._buttons.accepted.connect(self.accept)
+        self._buttons.rejected.connect(self.reject)
+        layout.addWidget(self._buttons)
+        self._update_ok_state()
+
+    def _set_all(self, state: bool) -> None:
+        for cb in self._checkboxes:
+            cb.setChecked(state)
+
+    def _update_ok_state(self) -> None:
+        any_checked = any(cb.isChecked() for cb in self._checkboxes)
+        self._buttons.button(QDialogButtonBox.Ok).setEnabled(any_checked)
+
+    def selected_jobs(self) -> List[Dict]:
+        return [job for job, cb in zip(self._jobs, self._checkboxes) if cb.isChecked()]
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -661,7 +736,7 @@ class FolderPanel(QWidget):
         self.run_requested.emit(jobs)
 
     def _on_simulate(self) -> None:
-        """Collect only FULLY_SAMPLED jobs and emit them as RETRO_UNDERSAMPLE."""
+        """Confirm the checked FULLY_SAMPLED scans, then emit them as RETRO_UNDERSAMPLE."""
         all_jobs = self._collect_jobs()
         fs_jobs  = [j for j in all_jobs if j.get("scan_type") == SCAN_FULLY_SAMPLED]
         if not fs_jobs:
@@ -670,6 +745,15 @@ class FolderPanel(QWidget):
                 "Please check at least one Fully-Sampled scan to simulate undersampling."
             )
             return
-        for j in fs_jobs:
+
+        # Confirm which scans to undersample (all pre-selected; user can untick).
+        dlg = _SimulateSelectDialog(fs_jobs, self)
+        if dlg.exec_() != QDialog.Accepted:
+            return
+        chosen = dlg.selected_jobs()
+        if not chosen:
+            return
+
+        for j in chosen:
             j["scan_type"] = SCAN_RETRO_UNDERSAMPLE
-        self.simulate_requested.emit(fs_jobs)
+        self.simulate_requested.emit(chosen)
