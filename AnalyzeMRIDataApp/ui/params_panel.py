@@ -1,34 +1,19 @@
 """
-ParamsPanel — right-side panel for reconstruction parameters.
+ParamsPanel — right-side panel for all reconstruction parameters.
 
-Groups:
-  ┌ Common ─────────────────────────────────────────────
-  │  Grid size (NUFFT)    [512]
-  │  Scan FOV (mm)        [256]
-  │  Traj margin (px)     [1.0]
-  │  Calib width (ESPIRIT)[24]
-  └──────────────────────────────────────────────────────
-  ┌ GRAPPA ─────────────────────────────────────────────
-  │  ACS lines            [24]
-  │  R-factor             [4]
-  │  Kernel (rows×cols)   [5 × 5]
-  └──────────────────────────────────────────────────────
-  ┌ Poisson CS PICS ────────────────────────────────────
-  │  λ wavelet            [0.01]
-  │  Max iterations       [100]
-  └──────────────────────────────────────────────────────
-  ┌ Output ──────────────────────────────────────────────
-  │  Save directory       [Browse…]
-  │  ☑ Generate PDF report
-  │  ☑ Save combined images (.npy)
-  └──────────────────────────────────────────────────────
+Groups (top to bottom): Common (NUFFT/ESPIRiT + Recon engine) · Fully Sampled ·
+TSE echo order · Equispaced Reconstruction · Poisson Disc Reconstruction ·
+Unknown Scans (generic fallback) · Undersampling Simulator · Output.
 
-All values are accessible as a plain dict via .get_params().
+Method combos enable/disable their dependent widgets; all values are read as a
+plain dict via .get_params(). Method names are engine-neutral — whether BART or
+sigpy runs the ESPIRiT/SENSE-family methods is chosen by the "Recon engine"
+selector (processing.recon_backend), not by the method name.
 """
 
 from pathlib import Path
 
-from PyQt5.QtCore import pyqtSignal
+from PyQt5.QtCore import QStandardPaths, pyqtSignal
 from PyQt5.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -55,8 +40,8 @@ class ParamsPanel(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setMinimumWidth(260)
-        self.setMaximumWidth(340)
+        self.setMinimumWidth(280)
+        self.setMaximumWidth(420)   # wide enough for the longest method names
 
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
@@ -205,25 +190,27 @@ class ParamsPanel(QWidget):
         form_grappa = QFormLayout(grp_grappa)
 
         self.combo_equi_method = QComboBox()
-        self.combo_equi_method.addItem("GRAPPA (pygrappa)",          "grappa")
-        self.combo_equi_method.addItem("GRAPPA + SENSE",             "grappa_sense")
-        self.combo_equi_method.addItem("Pure SENSE (BART)",          "sense")
-        self.combo_equi_method.addItem("CS-SENSE (BART)",            "sense_cs")
-        self.combo_equi_method.addItem("ESPIRiT (BART)",             "espirit")
-        self.combo_equi_method.addItem("ESPIRiT + L1 (BART)",        "espirit_l1")
-        self.combo_equi_method.addItem("ESPIRiT + L2 (BART)",        "espirit_l2")
-        self.combo_equi_method.addItem("ESPIRiT + TV (BART)",        "espirit_tv")
-        self.combo_equi_method.addItem("ESPIRiT + L1-Wav (BART)",    "espirit_l1wav")
+        self.combo_equi_method.addItem("GRAPPA",             "grappa")
+        self.combo_equi_method.addItem("GRAPPA + SENSE",     "grappa_sense")
+        self.combo_equi_method.addItem("Pure SENSE",         "sense")
+        self.combo_equi_method.addItem("CS-SENSE",           "sense_cs")
+        self.combo_equi_method.addItem("ESPIRiT",            "espirit")
+        self.combo_equi_method.addItem("ESPIRiT + L1",       "espirit_l1")
+        self.combo_equi_method.addItem("ESPIRiT + L2",       "espirit_l2")
+        self.combo_equi_method.addItem("ESPIRiT + TV",       "espirit_tv")
+        self.combo_equi_method.addItem("ESPIRiT + L1-Wav",   "espirit_l1wav")
         self.combo_equi_method.setToolTip(
-            "GRAPPA: parallel-imaging k-space interpolation (RSS coil combination).\n"
+            "GRAPPA: parallel-imaging k-space interpolation (pygrappa; RSS coil combination).\n"
             "GRAPPA + SENSE: GRAPPA k-space fill + ESPIRiT sensitivity-weighted coil combination.\n"
-            "Pure SENSE: 1 ESPIRiT map set + BART PICS -S (no regularisation).\n"
-            "CS-SENSE: 1 ESPIRiT map set + BART PICS with L1 wavelet regularisation.\n"
-            "ESPIRiT: multi-map ESPIRiT operator (BART PICS, no regularisation).\n"
+            "Pure SENSE: 1 ESPIRiT map set + PICS -S (no regularisation).\n"
+            "CS-SENSE: 1 ESPIRiT map set + PICS with L1 wavelet regularisation.\n"
+            "ESPIRiT: multi-map ESPIRiT operator (PICS, no regularisation).\n"
             "ESPIRiT + L1: multi-map ESPIRiT operator + L1 wavelet (legacy -l1 flag).\n"
-            "ESPIRiT + L2: ESPIRiT + L2 regularisation (-R Q:λ, λ≈0.001).\n"
-            "ESPIRiT + TV: ESPIRiT + Total Variation (-R T:7:0:λ, λ≈0.001).\n"
-            "ESPIRiT + L1-Wav: ESPIRiT + L1 wavelet (-R W:7:0:λ, λ≈0.001)."
+            "ESPIRiT + L2: ESPIRiT + L2 regularisation (-R Q:λ).\n"
+            "ESPIRiT + TV: ESPIRiT + Total Variation (-R T:7:0:λ).\n"
+            "ESPIRiT + L1-Wav: ESPIRiT + L1 wavelet (-R W:7:0:λ).\n\n"
+            "SENSE/ESPIRiT methods run on the engine chosen under 'Recon engine'\n"
+            "(BART or the built-in sigpy fallback)."
         )
         form_grappa.addRow("Method:", self.combo_equi_method)
 
@@ -431,20 +418,33 @@ class ParamsPanel(QWidget):
         )
         form_sim.addRow(self._sim_power_label, self.dspin_sim_power)
 
+        self._sim_seed_label = QLabel("Random seed:")
+        self.spin_sim_seed = QSpinBox()
+        self.spin_sim_seed.setRange(0, 2**31 - 1)
+        self.spin_sim_seed.setValue(0)
+        self.spin_sim_seed.setSpecialValueText("Random")
+        self.spin_sim_seed.setToolTip(
+            "Seed for the Variable-Density random line selection.\n"
+            "0 = Random (a new mask every run); any other value makes the\n"
+            "VD mask reproducible. Recorded in the result parameters and PDF."
+        )
+        form_sim.addRow(self._sim_seed_label, self.spin_sim_seed)
+
         self.combo_sim_recon = QComboBox()
-        self.combo_sim_recon.addItem("None (mask & ZF only)",       "none")
-        self.combo_sim_recon.addItem("GRAPPA (pygrappa)",           "grappa")
-        self.combo_sim_recon.addItem("gGRAPPA (PyTorch)",           "ggrappa")
-        self.combo_sim_recon.addItem("Pure SENSE (BART)",           "sense")
-        self.combo_sim_recon.addItem("CS-SENSE (BART)",             "sense_cs")
-        self.combo_sim_recon.addItem("ESPIRiT (BART)",              "espirit")
-        self.combo_sim_recon.addItem("ESPIRiT + L1 (BART)",         "espirit_l1")
-        self.combo_sim_recon.addItem("ESPIRiT + L2 (BART)",         "espirit_l2")
-        self.combo_sim_recon.addItem("ESPIRiT + TV (BART)",         "espirit_tv")
-        self.combo_sim_recon.addItem("ESPIRiT + L1-Wav (BART)",     "espirit_l1wav")
+        self.combo_sim_recon.addItem("None (mask & ZF only)",  "none")
+        self.combo_sim_recon.addItem("GRAPPA",                 "grappa")
+        self.combo_sim_recon.addItem("gGRAPPA (PyTorch)",      "ggrappa")
+        self.combo_sim_recon.addItem("Pure SENSE",             "sense")
+        self.combo_sim_recon.addItem("CS-SENSE",               "sense_cs")
+        self.combo_sim_recon.addItem("ESPIRiT",                "espirit")
+        self.combo_sim_recon.addItem("ESPIRiT + L1",           "espirit_l1")
+        self.combo_sim_recon.addItem("ESPIRiT + L2",           "espirit_l2")
+        self.combo_sim_recon.addItem("ESPIRiT + TV",           "espirit_tv")
+        self.combo_sim_recon.addItem("ESPIRiT + L1-Wav",       "espirit_l1wav")
         self.combo_sim_recon.setToolTip(
             "Reconstruction method to apply to the retrospectively undersampled k-space.\n"
-            "ESPIRiT + L2/TV/L1-Wav use the BART -R flag (demo notebook defaults: λ≈0.001)."
+            "SENSE/ESPIRiT methods run on the selected Recon engine (BART or sigpy);\n"
+            "GRAPPA uses pygrappa, gGRAPPA needs the optional torch install."
         )
         form_sim.addRow("Recon method:", self.combo_sim_recon)
 
@@ -526,11 +526,16 @@ class ParamsPanel(QWidget):
         save_layout = QHBoxLayout(save_row)
         save_layout.setContentsMargins(0, 0, 0, 0)
         self.edit_save_dir = QLineEdit()
-        default_save = str(
-            Path(__file__).resolve().parent.parent / "results"
-        )
+        # Default to a user-writable location: the app folder is read-only in
+        # installed/frozen builds (Program Files, .app bundle), so <app>/results
+        # would fail there. Created lazily on first save.
+        _docs = QStandardPaths.writableLocation(QStandardPaths.DocumentsLocation)
+        default_save = str(Path(_docs) / "SHIR" if _docs else Path.home() / "SHIR")
         self.edit_save_dir.setText(default_save)
-        self.edit_save_dir.setToolTip("Directory where results and reports are saved")
+        self.edit_save_dir.setToolTip(
+            "Directory where results and reports are saved\n"
+            "(created on first save if it does not exist)"
+        )
         btn_browse = QPushButton("…")
         btn_browse.setFixedWidth(28)
         btn_browse.clicked.connect(self._browse_save_dir)
@@ -545,7 +550,7 @@ class ParamsPanel(QWidget):
         form_out.addRow(self.chk_pdf)
         form_out.addRow(self.chk_npy)
 
-        self.btn_save_output = QPushButton("💾  Save output")
+        self.btn_save_output = QPushButton("Save Output…")
         self.btn_save_output.setToolTip(
             "Save the checked outputs — PDF report and/or .npy images — to a chosen location"
         )
@@ -560,6 +565,8 @@ class ParamsPanel(QWidget):
         is_vd = self.combo_sim_mask.currentData() == "vd"
         self._sim_power_label.setVisible(is_vd)
         self.dspin_sim_power.setVisible(is_vd)
+        self._sim_seed_label.setVisible(is_vd)
+        self.spin_sim_seed.setVisible(is_vd)
 
     def _on_sim_recon_changed(self) -> None:
         m = self.combo_sim_recon.currentData()
@@ -606,6 +613,26 @@ class ParamsPanel(QWidget):
         if folder:
             self.edit_save_dir.setText(folder)
 
+    # ─── Settings persistence ─────────────────────────────────────────────────
+
+    def load_persistent(self, settings) -> None:
+        """Restore the sticky output/engine choices from QSettings."""
+        d = settings.value("output/save_dir", "", str)
+        if d:
+            self.edit_save_dir.setText(d)
+        self.chk_pdf.setChecked(settings.value("output/gen_pdf", False, bool))
+        self.chk_npy.setChecked(settings.value("output/save_npy", False, bool))
+        engine = settings.value("common/recon_backend", "", str)
+        idx = self.combo_backend.findData(engine)
+        if idx >= 0:
+            self.combo_backend.setCurrentIndex(idx)
+
+    def save_persistent(self, settings) -> None:
+        settings.setValue("output/save_dir", self.edit_save_dir.text())
+        settings.setValue("output/gen_pdf", self.chk_pdf.isChecked())
+        settings.setValue("output/save_npy", self.chk_npy.isChecked())
+        settings.setValue("common/recon_backend", self.combo_backend.currentData())
+
     # ─── Public API ───────────────────────────────────────────────────────────
 
     def get_params(self) -> dict:
@@ -648,6 +675,8 @@ class ParamsPanel(QWidget):
             "sim_acs_lines":    self.spin_sim_acs.value(),
             "sim_power_decay":  self.dspin_sim_power.value(),
             "sim_recon_method": self.combo_sim_recon.currentData(),
+            # 0 shows as "Random" in the UI → no fixed seed
+            "sim_rng_seed":     self.spin_sim_seed.value() or None,
             "sim_kernel_size":  (self.spin_sim_k_rows.value(), self.spin_sim_k_cols.value()),
             "sim_grappa_lambda": self.dspin_sim_grappa_lambda.value(),
             "sim_sense_iters":  self.spin_sim_sense_iters.value(),

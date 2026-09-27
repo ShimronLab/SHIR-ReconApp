@@ -1,32 +1,37 @@
 """
-FolderPanel — left-side panel for scan-folder selection and file/band picking.
+FolderPanel — left-side panel for scan-folder selection and file picking.
 
 Layout
 ------
   [Open Folder…] [Add Folder…]
   ─────────────────────────────
-  QTreeWidget
-    └ SE_1mm  (dat_files/)
-        └ [✓] Band         band_se_0  …  band_se_15
-            └ Band indices: [0] [1] … [15]  (checkboxes)
-        └ [✓] Fully-Sampled  (auto-detected file)
-        └ [✓] GRAPPA
-        └ [✓] PoissonDisc
+  QTreeWidget  (checkable; folder → scan-type group → file [→ per-slice])
+    └ SE_1mm
+        └ [✓] Band            band_se_0.dat … band_se_15.dat
+        └ [✓] Fully-Sampled   fully_sampled.dat
+        └ [✓] Equispaced      equispaced_R4_acs24.dat
+        └ [✓] PoissonDisc     PoissonDisc.dat
     └ SE_3mm  …
   ─────────────────────────────
-  [Select All]  [Clear All]  [Run Selected ▶]
+  [Select All] [Clear All] [Remove Folder]          [Run Selected ▶]
+
+Accepts a scan folder with a dat_files/ sub-folder, a dat_files/ folder
+directly, or any folder containing loose .dat files. Right-click a file for
+"Reconstruct as", per-slice selection, manual reference, or trajectory JSON.
 
 Emits
 -----
-  run_requested(list[dict])   — list of job dicts with keys:
-      scan_folder, scan_type, dat_path, json_path (or None), band_idx (or None)
+  run_requested(list[dict])      — checked jobs: {dat_path, scan_type,
+      json_path|None, band_idx|None, folder_key, [slice_idx, n_slices,
+      reference_dat_path, reference_override]}
+  simulate_requested(list[dict]) — fully-sampled jobs re-typed RETRO_UNDERSAMPLE
 """
 
 import re
 from pathlib import Path
 from typing import Dict, List, Optional
 
-from PyQt5.QtCore import Qt, pyqtSignal
+from PyQt5.QtCore import QSettings, Qt, pyqtSignal
 from PyQt5.QtGui import QColor, QFont
 from PyQt5.QtWidgets import (
     QAbstractItemView,
@@ -119,29 +124,38 @@ def _extract_r_from_filename(filename: str) -> Optional[int]:
     return int(m.group(1)) if m else None
 
 
+def _json_search_dirs(dat_folder: Path) -> list:
+    """Where trajectory JSONs may live: the scan root (parent of dat_files/)
+    for the classic layout, or the folder itself for a loose-.dat layout."""
+    return [dat_folder.parent, dat_folder]
+
+
 def _find_equispaced_json(dat_folder: Path, dat_filename: str) -> Optional[str]:
     """Find the equispaced trajectory JSON matching the R factor in the filename."""
-    parent = dat_folder.parent
     r = _extract_r_from_filename(dat_filename)
-    if r is not None:
-        for pat in _EQUI_JSON_PATTERNS:
-            candidate = parent / pat.format(R=r)
-            if candidate.exists():
-                return str(candidate)
-    # Fall back to any undersampled JSON in the parent folder
-    for candidate in sorted(parent.glob("[Uu]ndersampled*.json")):
-        return str(candidate)
+    for folder in _json_search_dirs(dat_folder):
+        if r is not None:
+            for pat in _EQUI_JSON_PATTERNS:
+                candidate = folder / pat.format(R=r)
+                if candidate.exists():
+                    return str(candidate)
+    # Fall back to any undersampled JSON in the search folders
+    for folder in _json_search_dirs(dat_folder):
+        for candidate in sorted(folder.glob("[Uu]ndersampled*.json")):
+            return str(candidate)
     return None
 
 
 def _find_json(dat_folder: Path, scan_type: ScanType) -> Optional[str]:
-    """Look for the trajectory/mask JSON in the scan parent folder."""
+    """Look for the trajectory/mask JSON near the scan folder."""
     json_name = _JSON_NAMES.get(scan_type)
     if not json_name:
         return None
-    parent = dat_folder.parent
-    candidate = parent / json_name
-    return str(candidate) if candidate.exists() else None
+    for folder in _json_search_dirs(dat_folder):
+        candidate = folder / json_name
+        if candidate.exists():
+            return str(candidate)
+    return None
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -219,40 +233,79 @@ class FolderPanel(QWidget):
 
     # ─── Folder loading ───────────────────────────────────────────────────────
 
+    def set_running(self, running: bool) -> None:
+        """Disable run/folder controls while a reconstruction queue is active."""
+        self._btn_run.setEnabled(not running)
+
     def _on_open_folder(self) -> None:
-        self._tree.clear()
+        if self._tree.topLevelItemCount() > 0:
+            reply = QMessageBox.question(
+                self, "Replace folder list?",
+                "Opening a folder replaces the current folder list and its "
+                "selections.\nUse 'Add Folder…' to keep them.\n\nContinue?",
+                QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes,
+            )
+            if reply != QMessageBox.Yes:
+                return
+            self._tree.clear()
         self._add_folder_dialog()
 
     def _on_add_folder(self) -> None:
         self._add_folder_dialog()
 
     def _add_folder_dialog(self) -> None:
+        settings = QSettings("Technion", "SHIR")
+        start_dir = settings.value("folders/last_dir", "", str) or ""
         folder = QFileDialog.getExistingDirectory(
-            self, "Select scan folder or dat_files folder"
+            self, "Select scan folder (dat_files/ layout or loose .dat files)",
+            start_dir,
         )
         if folder:
+            settings.setValue("folders/last_dir", folder)
             self._load_folder(Path(folder))
+
+    def _loaded_dat_folders(self) -> set:
+        """dat-folder paths already present as top-level tree entries."""
+        out = set()
+        for i in range(self._tree.topLevelItemCount()):
+            out.add(self._tree.topLevelItem(i).text(1))
+        return out
 
     def _load_folder(self, folder: Path) -> None:
         """
-        Accept either a dat_files/ folder directly or a parent scan folder
-        (which should then have a dat_files/ sub-folder).
+        Accept, in order of preference:
+          * a ``dat_files/`` folder directly,
+          * a parent scan folder containing ``dat_files/``,
+          * any folder with loose ``*.dat`` files directly inside it.
         """
-        dat_folder = folder if folder.name == "dat_files" else folder / "dat_files"
-        if not dat_folder.exists():
-            QMessageBox.warning(
-                self, "Folder not found",
-                f"Could not find dat_files/ in:\n{folder}\n\n"
-                "Please select either a dat_files/ folder directly or its parent."
-            )
-            return
+        if folder.name == "dat_files":
+            dat_folder = folder
+        elif (folder / "dat_files").is_dir():
+            dat_folder = folder / "dat_files"
+        else:
+            dat_folder = folder                     # loose-.dat layout
 
         dat_files = sorted(dat_folder.glob("*.dat"))
         if not dat_files:
-            QMessageBox.warning(self, "No .dat files", f"No .dat files found in:\n{dat_folder}")
+            QMessageBox.warning(
+                self, "No .dat files",
+                f"No .dat files found in:\n{folder}\n\n"
+                "Select a scan folder (with a dat_files/ sub-folder), a "
+                "dat_files/ folder itself, or a folder containing .dat files.",
+            )
             return
 
-        folder_key = dat_folder.parent.name   # e.g. SE_1mm
+        if str(dat_folder) in self._loaded_dat_folders():
+            QMessageBox.information(
+                self, "Already loaded",
+                f"This folder is already in the list:\n{dat_folder}",
+            )
+            return
+
+        # Scan-folder display name: the parent for a dat_files/ layout, the
+        # folder itself for a loose layout.
+        folder_key = (dat_folder.parent.name if dat_folder.name == "dat_files"
+                      else dat_folder.name)
         self._add_tree_folder(folder_key, dat_folder, dat_files)
 
     def _add_tree_folder(

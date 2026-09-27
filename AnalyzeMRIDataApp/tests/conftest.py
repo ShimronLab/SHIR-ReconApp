@@ -32,6 +32,15 @@ for p in (str(APP_DIR), str(REPO_ROOT / "read_siemens_scans")):
 import numpy as np
 import pytest
 
+
+@pytest.fixture(autouse=True)
+def _isolate_qsettings(tmp_path, monkeypatch):
+    """Route QSettings to a temp dir so tests never touch real user settings."""
+    from PyQt5.QtCore import QSettings
+    QSettings.setDefaultFormat(QSettings.IniFormat)
+    QSettings.setPath(QSettings.IniFormat, QSettings.UserScope, str(tmp_path))
+    yield
+
 # Real sample data (user-provided phantom scans); tests marked `realdata` skip
 # when the folder is not present on the machine running the suite.
 SAMPLE_SCAN_DIR = Path(

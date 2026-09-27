@@ -26,7 +26,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import numpy as np
-from PyQt5.QtCore import QObject, QThread, Qt, pyqtSignal
+from PyQt5.QtCore import QObject, QSettings, QThread, Qt, pyqtSignal
 from PyQt5.QtGui import QIcon, QTextCursor
 from PyQt5.QtWidgets import (
     QAction,
@@ -244,6 +244,7 @@ class ReconWorker(QObject):
                     sense_l2        = params.get("sense_l2",        False),
                     espirit_num_maps = params.get("espirit_num_maps", 2),
                     swap_pe_read    = params.get("sim_swap_pe_read", False),
+                    rng_seed        = params.get("sim_rng_seed"),
                     tse             = params.get("tse"),
                     necho           = params.get("tse_necho"),
                     te1             = params.get("tse_te1"),
@@ -377,6 +378,7 @@ class MainWindow(QMainWindow):
         self._build_ui()
         self._build_toolbar()
         self._build_status_bar()
+        self._restore_settings()
 
     # ─── UI construction ──────────────────────────────────────────────────────
 
@@ -431,19 +433,21 @@ class MainWindow(QMainWindow):
         tb.setMovable(False)
         self.addToolBar(tb)
 
-        act_open = QAction("📂  Open Folder", self)
+        # Plain-text labels: emoji glyphs render as empty boxes on systems
+        # without an emoji font (common on minimal Linux/WSL installs).
+        act_open = QAction("Open Folder", self)
         act_open.setToolTip("Open a scan folder to analyse")
         act_open.triggered.connect(self._folder_panel._on_open_folder)
         tb.addAction(act_open)
 
         tb.addSeparator()
 
-        self._act_run = QAction("▶  Run Selected", self)
+        self._act_run = QAction("Run Selected", self)
         self._act_run.setToolTip("Start processing checked scans")
         self._act_run.triggered.connect(self._folder_panel._on_run)
         tb.addAction(self._act_run)
 
-        self._act_simulate = QAction("💫 Undersampling Simulator", self)
+        self._act_simulate = QAction("Undersampling Simulator", self)
         self._act_simulate.setToolTip(
             "Retrospectively undersample a fully-sampled scan and reconstruct.\n"
             "Check at least one Fully-Sampled scan first."
@@ -451,27 +455,32 @@ class MainWindow(QMainWindow):
         self._act_simulate.triggered.connect(self._folder_panel._on_simulate)
         tb.addAction(self._act_simulate)
 
-        self._act_stop = QAction("■  Stop", self)
-        self._act_stop.setToolTip("Abort current processing")
+        self._act_stop = QAction("Stop", self)
+        self._act_stop.setToolTip(
+            "Cancel the remaining queue; the current job stops at its next "
+            "pipeline stage"
+        )
         self._act_stop.setEnabled(False)
         self._act_stop.triggered.connect(self._on_stop)
         tb.addAction(self._act_stop)
 
         tb.addSeparator()
 
-        act_coils = QAction("🔬  All Coils", self)
-        act_coils.setToolTip("Open all-coils viewer for current tab")
-        act_coils.triggered.connect(self._on_all_coils)
-        tb.addAction(act_coils)
+        self._act_coils = QAction("All Coils", self)
+        self._act_coils.setToolTip("Open all-coils viewer for current tab")
+        self._act_coils.setEnabled(False)
+        self._act_coils.triggered.connect(self._on_all_coils)
+        tb.addAction(self._act_coils)
 
-        act_clear = QAction("🗑  Clear Tabs", self)
-        act_clear.setToolTip("Remove all result tabs")
-        act_clear.triggered.connect(self._on_clear_results)
-        tb.addAction(act_clear)
+        self._act_clear = QAction("Clear Tabs", self)
+        self._act_clear.setToolTip("Remove all result tabs")
+        self._act_clear.setEnabled(False)
+        self._act_clear.triggered.connect(self._on_clear_results)
+        tb.addAction(self._act_clear)
 
         tb.addSeparator()
 
-        act_about = QAction("ℹ  About", self)
+        act_about = QAction("About", self)
         act_about.triggered.connect(self._on_about)
         tb.addAction(act_about)
 
@@ -481,37 +490,72 @@ class MainWindow(QMainWindow):
 
     # ─── Job execution ────────────────────────────────────────────────────────
 
-    def _on_run_requested(self, jobs: List[Dict]) -> None:
-        if self._active_thread is not None and self._active_thread.isRunning():
-            QMessageBox.warning(self, "Busy", "A reconstruction is already running.\nPlease wait or stop it first.")
-            return
-
+    def _start_job_queue(self, jobs: List[Dict], banner: str) -> None:
+        """Shared run/simulate entry: snapshot params, validate, start the queue."""
         params = self._params_panel.get_params()
         self._params = params
-
-        # Attach fully-sampled reference to GRAPPA jobs in same folder
-        jobs = _attach_references(jobs)
+        self._npy_warned = False
+        self._warn_questionable_params(params)
+        if (params.get("gen_pdf") or params.get("save_npy")) \
+                and not self._check_save_dir_writable(params.get("save_dir", "")):
+            return
 
         self._job_queue = list(jobs)
         self._failed_jobs = []
         self._jobs_total = len(jobs)
-        self._log_msg(f"Queued {len(jobs)} job(s). Starting…")
+        self._log_msg(f"{banner}Queued {len(jobs)} job(s). Starting…")
         self._run_next_job()
+
+    def _on_run_requested(self, jobs: List[Dict]) -> None:
+        if self._active_thread is not None and self._active_thread.isRunning():
+            QMessageBox.warning(self, "Busy", "A reconstruction is already running.\nPlease wait or stop it first.")
+            return
+        # Attach fully-sampled reference to undersampled jobs in same folder
+        jobs = _attach_references(jobs)
+        self._start_job_queue(jobs, "")
 
     def _on_simulate_requested(self, jobs: List[Dict]) -> None:
         """Handle jobs from the Simulate button (RETRO_UNDERSAMPLE scan type)."""
         if self._active_thread is not None and self._active_thread.isRunning():
             QMessageBox.warning(self, "Busy", "A reconstruction is already running.\nPlease wait or stop it first.")
             return
+        self._start_job_queue(jobs, "[Simulate] ")
 
-        params = self._params_panel.get_params()
-        self._params = params
+    def _warn_questionable_params(self, params: Dict) -> None:
+        """Log (never block) warnings for technically-valid-but-unusual values."""
+        for key, name in (("kernel_size", "GRAPPA kernel"),
+                          ("sim_kernel_size", "Simulator GRAPPA kernel")):
+            k = params.get(key) or ()
+            if any(int(v) % 2 == 0 for v in k):
+                self._log_msg(
+                    f"⚠ {name} {tuple(k)} has an even dimension — GRAPPA kernels "
+                    f"are normally odd (e.g. 5×5) so they centre on the target sample.",
+                    error=True,
+                )
+        grid = int(params.get("grid_size", 0))
+        if grid and (grid & (grid - 1)) != 0:
+            self._log_msg(
+                f"⚠ Grid size {grid} is not a power of 2 — NUFFT gridding is "
+                f"fastest and best-tested at 256/512/1024.",
+                error=True,
+            )
 
-        self._job_queue = list(jobs)
-        self._failed_jobs = []
-        self._jobs_total = len(jobs)
-        self._log_msg(f"[Simulate] Queued {len(jobs)} job(s). Starting…")
-        self._run_next_job()
+    def _check_save_dir_writable(self, save_dir: str) -> bool:
+        """Create/verify the save directory before a run that will write to it."""
+        try:
+            p = Path(save_dir).expanduser()
+            p.mkdir(parents=True, exist_ok=True)
+            if os.access(str(p), os.W_OK):
+                return True
+            raise OSError("no write permission")
+        except OSError as exc:
+            QMessageBox.warning(
+                self, "Save directory not writable",
+                f"Cannot write to the Save directory:\n{save_dir}\n\n({exc})\n\n"
+                "Choose another directory in the Output panel, or untick the "
+                "PDF/.npy save options.",
+            )
+            return False
 
     def _run_next_job(self) -> None:
         if not self._job_queue:
@@ -522,9 +566,15 @@ class MainWindow(QMainWindow):
         self._current_job_label = _make_label(job)
         job_no = self._jobs_total - len(self._job_queue)
         self._log_msg(f"\n── [{job_no}/{self._jobs_total}] {self._current_job_label} ──")
-        self._progress.setVisible(True)
-        self._act_stop.setEnabled(True)
-        self._act_run.setEnabled(False)
+        self._set_running(True)
+        if self._jobs_total > 1:
+            # Overall queue progress; the busy state of the current job is
+            # conveyed by the status text and streaming log.
+            self._progress.setRange(0, self._jobs_total)
+            self._progress.setValue(job_no - 1)
+            self._progress.setFormat(f"Job {job_no} of {self._jobs_total}")
+        else:
+            self._progress.setRange(0, 0)   # indeterminate spinner
         self._status_label.setText(
             f"Job {job_no}/{self._jobs_total}: {self._current_job_label}"
         )
@@ -553,6 +603,7 @@ class MainWindow(QMainWindow):
         self._results.append(result)
         self._results_viewer.add_result(result, label)
         self._log_msg(f"  ✓  {label}")
+        self._update_result_actions()
 
         # Auto-save .npy if requested
         if self._params.get("save_npy"):
@@ -562,6 +613,7 @@ class MainWindow(QMainWindow):
         """A tab was closed — drop its result so PDFs/.npy saves and memory
         stay in sync with what is on screen."""
         self._results = [r for r in self._results if r is not result]
+        self._update_result_actions()
 
     def _on_slice_selection_needed(self, n_slices: int) -> None:
         """Main-thread slot: show a dialog and send the selected slice back to the worker."""
@@ -607,10 +659,23 @@ class MainWindow(QMainWindow):
         self._log_msg(msg, error=True)
         self._status_label.setText("Job failed — see log")
 
+    def _set_running(self, running: bool) -> None:
+        """Single place that flips every run-state control (toolbar actions,
+        folder-panel buttons, progress bar)."""
+        self._act_run.setEnabled(not running)
+        self._act_simulate.setEnabled(not running)
+        self._act_stop.setEnabled(running)
+        self._progress.setVisible(running)
+        self._folder_panel.set_running(running)
+
+    def _update_result_actions(self) -> None:
+        """Enable result-dependent actions only when there is something to act on."""
+        has = bool(self._results)
+        self._act_coils.setEnabled(has)
+        self._act_clear.setEnabled(has)
+
     def _on_all_jobs_done(self) -> None:
-        self._progress.setVisible(False)
-        self._act_stop.setEnabled(False)
-        self._act_run.setEnabled(True)
+        self._set_running(False)
         # Clear references so the deleted C++ Qt objects are not accessed on the
         # next run (calling .isRunning() on a deleteLater'd QThread crashes the app).
         self._active_thread = None
@@ -645,8 +710,35 @@ class MainWindow(QMainWindow):
         self._log_msg("⚠ Stop requested — cancelling at the next pipeline stage.")
         self._act_stop.setEnabled(False)
 
+    # ─── Settings persistence ─────────────────────────────────────────────────
+
+    def _restore_settings(self) -> None:
+        """Restore window geometry + persisted panel settings. A corrupt or
+        missing setting must never block launch."""
+        try:
+            s = QSettings("Technion", "SHIR")
+            geo = s.value("window/geometry")
+            if geo is not None:
+                self.restoreGeometry(geo)
+            split = s.value("window/splitter")
+            if split is not None:
+                self._splitter.restoreState(split)
+            self._params_panel.load_persistent(s)
+        except Exception:
+            pass
+
+    def _save_settings(self) -> None:
+        try:
+            s = QSettings("Technion", "SHIR")
+            s.setValue("window/geometry", self.saveGeometry())
+            s.setValue("window/splitter", self._splitter.saveState())
+            self._params_panel.save_persistent(s)
+        except Exception:
+            pass
+
     def closeEvent(self, event) -> None:
         """Shut down cleanly: never destroy a QThread that is still running."""
+        self._save_settings()
         thread = self._active_thread
         if thread is None or not thread.isRunning():
             event.accept()
@@ -729,7 +821,7 @@ class MainWindow(QMainWindow):
                     folder_name   = fkey,
                     params_summary= self._params,
                 )
-                self._log_msg(f"  📄 PDF saved: {pdf_path}")
+                self._log_msg(f"  PDF saved: {pdf_path}")
             except Exception as e:
                 self._log_msg(f"  ⚠ PDF generation failed for {fkey}: {e}")
 
@@ -803,7 +895,7 @@ class MainWindow(QMainWindow):
                         params_summary= p,
                     )
                     saved.append(pdf_path)
-                    self._log_msg(f"  📄 PDF saved: {pdf_path}")
+                    self._log_msg(f"  PDF saved: {pdf_path}")
                 except Exception as e:
                     self._log_msg(f"  ⚠ PDF generation failed for {fkey}: {e}")
 
@@ -824,7 +916,7 @@ class MainWindow(QMainWindow):
                         npy_path = out_dir / f"{stem}.npy"
                     np.save(str(npy_path), np.squeeze(combined))
                     saved.append(str(npy_path))
-                    self._log_msg(f"  💾 .npy saved: {npy_path}")
+                    self._log_msg(f"  .npy saved: {npy_path}")
 
         if saved:
             self._status_label.setText(f"Saved {len(saved)} file(s)")
@@ -858,7 +950,7 @@ class MainWindow(QMainWindow):
             if combined is not None:
                 npy_path = save_dir / f"{label}.npy"
                 np.save(str(npy_path), np.squeeze(combined))
-                self._log_msg(f"  💾 .npy saved: {npy_path}")
+                self._log_msg(f"  .npy saved: {npy_path}")
         except OSError as exc:
             # A bad/unwritable save dir must not kill the run; warn once.
             self._log_msg(f"  ⚠ .npy auto-save failed: {exc}", error=True)
@@ -875,6 +967,7 @@ class MainWindow(QMainWindow):
     def _on_clear_results(self) -> None:
         self._results_viewer.clear_all()
         self._results.clear()
+        self._update_result_actions()
         self._log_msg("All result tabs cleared.")
 
     def _log_msg(self, msg: str, error: bool = False) -> None:
@@ -893,17 +986,18 @@ class MainWindow(QMainWindow):
             "About SHIR",
             f"<b>SHIR</b> — System for Hybrid Image Reconstruction<br>"
             f"v{__version__}<br><br>"
-            "Processes Siemens TWIX .dat files via BART.<br><br>"
+            "Multi-pipeline reconstruction of Siemens TWIX .dat files.<br><br>"
             "Supported modes:<br>"
-            "&nbsp;• Band (NUFFT + ESPIRiT + PICS)<br>"
-            "&nbsp;• Fully-sampled (IFFT + RSS or ESPIRiT SENSE)<br>"
-            "&nbsp;• Equispaced (GRAPPA via pygrappa / Pure SENSE / CS-SENSE via BART)<br>"
-            "&nbsp;• Poisson-disc CS (BART PICS + wavelet)<br>"
-            "&nbsp;• Unknown scans — generic fallback (NUFFT with a trajectory "
-            "JSON / assumed-radial, CS with a mask from k-space, or "
-            "Cartesian IFFT + RSS)<br><br>"
-            "Requires: BART, PyQt5, pygrappa, sigpy, numpy, matplotlib.<br>"
-            "Run in WSL where BART is available.",
+            "&nbsp;• Band (NUFFT + ESPIRiT + SENSE)<br>"
+            "&nbsp;• Fully-sampled (IFFT + RSS or ESPIRiT + SENSE)<br>"
+            "&nbsp;• Equispaced (GRAPPA / SENSE / CS-SENSE / ESPIRiT ± L1/L2/TV)<br>"
+            "&nbsp;• Poisson-disc CS (PICS, L1-wavelet)<br>"
+            "&nbsp;• Retrospective undersampling simulator<br>"
+            "&nbsp;• Unknown scans — generic fallback (NUFFT / CS / Cartesian RSS)<br><br>"
+            "Reconstruction engine: <b>BART</b> when available (native or via WSL "
+            "on Windows), otherwise the built-in <b>sigpy</b> engine — see the "
+            "Recon engine selector in the parameters panel.<br><br>"
+            "Developed by Saar Drive, Shimron Lab, Technion.",
         )
 
 

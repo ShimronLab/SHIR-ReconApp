@@ -79,10 +79,15 @@ def _fallback_splash_pixmap() -> QPixmap:
     pix.fill(QColor("#1e2a38"))
     painter = QPainter(pix)
     painter.setPen(QColor("#e8f0fe"))
-    font = QFont("Arial", 22, QFont.Bold)
+    # Default font family (Qt resolves per platform) — "Arial" is not
+    # installed on many Linux systems.
+    font = QFont()
+    font.setPointSize(22)
+    font.setBold(True)
     painter.setFont(font)
     painter.drawText(pix.rect(), Qt.AlignCenter, "SHIR")
-    font2 = QFont("Arial", 11)
+    font2 = QFont()
+    font2.setPointSize(11)
     painter.setFont(font2)
     painter.drawText(
         0, 140, 540, 40, Qt.AlignCenter,

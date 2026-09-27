@@ -562,5 +562,6 @@ def reconstruct_retro(
             "sense_max_iter":   sense_max_iter,
             "espirit_num_maps": espirit_num_maps,
             "swap_pe_read":     swap_pe_read,
+            "rng_seed":         rng_seed,
         },
     }
