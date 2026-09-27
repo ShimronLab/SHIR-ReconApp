@@ -195,6 +195,10 @@ class _SimulateSelectDialog(QDialog):
         for job in fs_jobs:
             name = Path(job.get("dat_path", "")).name
             folder = job.get("folder_key", "")
+            # Per-slice jobs (multi-slice scans expanded via "Select slices…")
+            # share one filename — distinguish them by their slice number.
+            if job.get("slice_idx") is not None:
+                name += f" — slice {int(job['slice_idx']) + 1}/{int(job.get('n_slices', 0))}"
             cb = QCheckBox(f"{name}    ({folder})" if folder else name)
             cb.setChecked(True)
             cb.toggled.connect(self._update_ok_state)

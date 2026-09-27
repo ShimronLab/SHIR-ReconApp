@@ -24,6 +24,23 @@ def test_simulate_dialog_all_selected_by_default(qtbot):
     assert dlg._buttons.button(dlg._buttons.Ok).isEnabled()
 
 
+def test_simulate_dialog_labels_slices(qtbot):
+    """Per-slice jobs of one multi-slice scan must be distinguishable."""
+    from ui.folder_panel import _SimulateSelectDialog
+    jobs = [
+        {"dat_path": "/x/dat_files/siemens_fs.dat", "folder_key": "S",
+         "scan_type": "FULLY_SAMPLED", "slice_idx": 0, "n_slices": 5},
+        {"dat_path": "/x/dat_files/siemens_fs.dat", "folder_key": "S",
+         "scan_type": "FULLY_SAMPLED", "slice_idx": 4, "n_slices": 5},
+    ]
+    dlg = _SimulateSelectDialog(jobs)
+    qtbot.addWidget(dlg)
+    labels = [cb.text() for cb in dlg._checkboxes]
+    assert "slice 1/5" in labels[0]
+    assert "slice 5/5" in labels[1]
+    assert labels[0] != labels[1]
+
+
 def test_simulate_dialog_untick_filters(qtbot):
     from ui.folder_panel import _SimulateSelectDialog
     jobs = _fs_jobs()
