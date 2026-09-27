@@ -43,7 +43,7 @@ pip install pyinstaller
 pip install git+https://github.com/mind-inria/ggrappa.git --no-deps
 
 # The scientific stack (torch is optional and excluded from the final build):
-pip install PyQt5 matplotlib pillow scikit-image pygrappa sigpy twixtools mri-nufft finufft numba h5py opencv-python networkx imageio pyyaml pandas
+pip install -r AnalyzeMRIDataApp/requirements.txt -r AnalyzeMRIDataApp/requirements-dev.txt
 ```
 
 **Sanity check** (fast, catches broken installs before a long build):
@@ -170,7 +170,7 @@ file). Key pieces:
 - **Paths:** `APP_DIR` (has `app.py`) and `TWIX_PARENT` (parent of the nested
   `read_siemens_scans` package) are added via `--paths`.
 - **`COLLECT_ALL`:** pulls data/binaries/submodules for packages PyInstaller
-  can't fully trace (numba, llvmlite, finufft, mri_nufft, sigpy, pygrappa,
+  can't fully trace (numba, llvmlite, sigpy, pygrappa,
   twixtools, skimage, scipy, matplotlib, read_siemens_scans).
 - **`TORCH_PKGS`:** `torch` + `ggrappa`, added to the build only when
   `--no-torch` is **absent**, otherwise excluded.

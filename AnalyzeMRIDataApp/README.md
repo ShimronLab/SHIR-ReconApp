@@ -471,10 +471,12 @@ Further options worth considering for wider distribution (not yet set up):
   with the logo, optional WSL check).
 - A **Zenodo** DOI on the tagged release, plus a small anonymised demo `.dat`
   (+ trajectory JSON) so recipients can validate their WSL/BART setup.
-- **Licensing** must be settled before any public binary release — the app links
-  **PyQt5 (GPL v3)** (see below); a public binary would need to be GPL-licensed,
-  use a Riverbank commercial license, or migrate to PySide6 (LGPL). *(Deferred —
-  to be decided later.)*
+- **Licensing is settled**: SHIR is released under **GPL-3.0**
+  (Copyright © 2026 Saar Drive, Shimron Lab, Technion) — see the repository
+  [`LICENSE`](../LICENSE) and [`THIRD_PARTY_LICENSES.md`](../THIRD_PARTY_LICENSES.md).
+  GPL-3.0 is compatible with the bundled **PyQt5 (GPL v3)** for both source and
+  binary distribution. (Migrating to PySide6/LGPL remains possible later if a
+  more permissive app license is ever wanted.)
 
 ---
 
@@ -482,7 +484,9 @@ Further options worth considering for wider distribution (not yet set up):
 
 ### Application
 
-Developed by **Saar Drive**.
+Developed by **Saar Drive** (Shimron Lab, Technion — Israel Institute of
+Technology). Copyright © 2026 Saar Drive. Licensed under **GPL-3.0** — see
+[`LICENSE`](../LICENSE) and [`THIRD_PARTY_LICENSES.md`](../THIRD_PARTY_LICENSES.md).
 
 ### Third-Party Libraries Used
 
@@ -491,10 +495,8 @@ Developed by **Saar Drive**.
 | [BART](https://mrirecon.github.io/bart) | BSD-style | NUFFT, ESPIRiT, PICS (core reconstruction engine) |
 | [pygrappa](https://github.com/mckib2/pygrappa) | MIT | GRAPPA kernel calibration & reconstruction |
 | [twixtools](https://github.com/pehses/twixtools) | MIT | Siemens TWIX raw data parsing |
-| [sigpy](https://github.com/mikgroup/sigpy) | MIT | MRI signal processing utilities |
-| [mri-nufft](https://github.com/mind-inria/mri-nufft) | MIT | MRI NUFFT trajectory tools |
-| [finufft](https://github.com/flatironinstitute/finufft) | Apache 2.0 | Non-uniform FFT backend |
-| PyQt5, numpy, scipy, matplotlib, scikit-image, numba, h5py, pillow | various open-source | GUI, numerics, visualisation |
+| [sigpy](https://github.com/mikgroup/sigpy) | BSD 3-Clause | Built-in reconstruction engine (ESPIRiT / SENSE / CS / NUFFT) |
+| PyQt5 (GPL v3), numpy, scipy, matplotlib, scikit-image | various open-source | GUI, numerics, visualisation |
 
 Full pinned dependency list: [requirements.txt](requirements.txt)
 

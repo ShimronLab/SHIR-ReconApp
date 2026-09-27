@@ -27,3 +27,9 @@ scans/
 .vscode/
 .DS_Store
 Thumbs.db
+
+# ── Generated artifacts (markdown/notebook sources stay authoritative) ──
+AnalyzeMRIDataApp/Compile/instructions.pdf
+AnalyzeMRIDataApp/testing/*.png
+read_siemens_scans/demos/*.pdf
+.pytest_cache/

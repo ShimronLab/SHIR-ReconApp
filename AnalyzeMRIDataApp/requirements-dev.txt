@@ -1,0 +1,7 @@
+# Development / build tools (not needed to run the app).
+#   pip install -r requirements.txt -r requirements-dev.txt
+
+pytest
+pytest-qt
+pyinstaller          # standalone builds (Compile/compilation.py)
+pillow               # icon conversion during the PyInstaller build

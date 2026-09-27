@@ -8,11 +8,10 @@ Windows or Linux — it must run on a Mac.
 
     python3 -m venv .venv-build
     source .venv-build/bin/activate
-    pip install pyinstaller
-    pip install PyQt5 matplotlib pillow scikit-image pygrappa sigpy twixtools \\
-                mri-nufft finufft numba h5py opencv-python networkx imageio pyyaml pandas
+    pip install -r AnalyzeMRIDataApp/requirements.txt \\
+                -r AnalyzeMRIDataApp/requirements-dev.txt
     # ggrappa (optional; needs torch). Install with --no-deps to skip its scipy pin:
-    #   pip install "git+https://github.com/mind-inria/ggrappa.git" --no-deps torch
+    #   pip install torch && pip install --no-deps ./ggrappa
     python AnalyzeMRIDataApp/Compile/compilation_for_mac.py --no-torch
 
 Output lands in ``AnalyzeMRIDataApp/Compile/compilation_product/SHIR.app``.
@@ -71,8 +70,6 @@ COLLECT_ALL = [
     "read_siemens_scans",
     "numba",
     "llvmlite",
-    "finufft",
-    "mri_nufft",
     "sigpy",
     "pygrappa",
     "twixtools",

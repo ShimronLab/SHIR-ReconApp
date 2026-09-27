@@ -9,7 +9,7 @@ The project supports the processing and display of both 2D and 3D scans, providi
 ## Requirements
 
 Only requirements:
-`twixtools == 1.0, numpy, matplotlib`
+`twixtools == 0.24, numpy, matplotlib`
 
 ## Usage
 

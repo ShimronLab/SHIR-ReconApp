@@ -60,8 +60,6 @@ COLLECT_ALL = [
     "read_siemens_scans",
     "numba",
     "llvmlite",
-    "finufft",
-    "mri_nufft",
     "sigpy",
     "pygrappa",
     "twixtools",

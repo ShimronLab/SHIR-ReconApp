@@ -92,8 +92,18 @@ To build a standalone executable, see
 
 ---
 
-## Credits & licensing
+## License & ownership
 
-SHIR is developed in the Shimron Lab, Technion. The vendored `ggrappa/` package is
-third-party (see `ggrappa/LICENSE`). See `AnalyzeMRIDataApp/README.md` for full
-credits.
+**SHIR** — Copyright © 2026 **Saar Drive**, Shimron Lab,
+Technion — Israel Institute of Technology.
+
+SHIR is free software, released under the **GNU General Public License v3.0**
+(see [LICENSE](LICENSE)). GPL-3.0 was chosen because the GUI uses **PyQt5**,
+which is itself GPL-licensed — distributing SHIR binaries therefore requires
+GPL-compatible terms.
+
+Third-party components (BART, sigpy, pygrappa, twixtools, the vendored
+`ggrappa/`, and the `read_siemens_scans` reader adapted from code by Orel
+Tsioni) remain under their own licenses — see
+[THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md). Full credits are in
+[`AnalyzeMRIDataApp/README.md`](AnalyzeMRIDataApp/README.md).
