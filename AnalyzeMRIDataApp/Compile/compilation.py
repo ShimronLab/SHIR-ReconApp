@@ -8,17 +8,21 @@ Linux yields a Linux binary, not an ``.exe``.
 
     py -m venv .venv-build
     .venv-build\\Scripts\\activate
-    pip install pyinstaller torch ggrappa
-    pip install -r AnalyzeMRIDataApp\\requirements.txt
-    python AnalyzeMRIDataApp\\Compile\\compilation.py
+    pip install -r AnalyzeMRIDataApp\\requirements.txt ^
+                -r AnalyzeMRIDataApp\\requirements-dev.txt
+    python AnalyzeMRIDataApp\\Compile\\compilation.py --no-torch
 
+See Compile/compilation_instruction.md for the full step-by-step guide.
 Output lands in ``AnalyzeMRIDataApp/Compile/compilation_product/SHIR/``.
 
 Notes
 -----
 * Package mode is ``--onedir`` (one folder + exe): reliable for the heavy
-  scientific stack (numba/scipy/torch). Distribute by zipping the output folder.
-* torch + ggrappa are bundled so the ``ggrappa`` recon method works.
+  scientific stack (numba/scipy). Distribute by zipping the output folder.
+* Build with ``--no-torch`` (recommended): torch + ggrappa are excluded, which
+  keeps all BART/sigpy/pygrappa recon working and only disables the optional
+  ``ggrappa`` method. Omit ``--no-torch`` (and pip-install torch + ggrappa
+  first) only if you specifically need that method.
 * BART is a Linux/WSL-only external binary and cannot be bundled into a native
   Windows exe. Instead, run_bart() (processing/utils.py) bridges BART calls into
   WSL on Windows, so BART-based recon (pics/ecalib/nufft/pattern) works PROVIDED

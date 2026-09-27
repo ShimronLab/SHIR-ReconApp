@@ -33,17 +33,23 @@ conda create -n mri_toolkit python=3.13
 conda activate mri_toolkit
 ```
 
-Install the build tool + app dependencies:
+Install the app + build dependencies (this is all you need for a `--no-torch`
+build, which is the recommended one):
 
 ```powershell
-pip install pyinstaller
-
-# ggrappa: install WITHOUT its deps (its pinned scipy==1.13 tries to build from
-# source and fails with "Unknown compiler(s)" — we don't need it anyway).
-pip install git+https://github.com/mind-inria/ggrappa.git --no-deps
-
-# The scientific stack (torch is optional and excluded from the final build):
 pip install -r AnalyzeMRIDataApp/requirements.txt -r AnalyzeMRIDataApp/requirements-dev.txt
+```
+
+`requirements-dev.txt` includes `pyinstaller` and `pillow`. **torch and ggrappa
+are NOT needed for a `--no-torch` build** — skip them. Only if you want the
+optional `ggrappa` recon method in the bundle, also run (before building
+*without* `--no-torch`):
+
+```powershell
+pip install torch
+# ggrappa WITHOUT its deps (its pinned scipy==1.13 tries to build from source
+# and fails with "Unknown compiler(s)"); the conflict warning is harmless.
+pip install ./ggrappa --no-deps
 ```
 
 **Sanity check** (fast, catches broken installs before a long build):
@@ -57,8 +63,8 @@ python -c "import numpy, scipy, sigpy, numba, PyQt5, matplotlib, twixtools, skim
 ## 3. Copy the repo to a local path (avoid OneDrive)
 
 ```powershell
-robocopy "C:\Users\<you>\OneDrive - Technion\...\MRI_Acquisition_Reconstruction_Toolkit" "C:\dev\MRI_Toolkit" /E /XD .git Compile\build Compile\compilation_product
-cd C:\dev\MRI_Toolkit
+robocopy "C:\Users\<you>\OneDrive - Technion\...\SHIR-ReconApp" "C:\dev\SHIR-ReconApp" /E /XD .git Compile\build Compile\compilation_product
+cd C:\dev\SHIR-ReconApp
 ```
 
 The conda env works from any location, so no reinstall is needed.
