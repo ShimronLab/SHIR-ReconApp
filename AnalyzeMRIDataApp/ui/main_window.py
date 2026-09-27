@@ -134,17 +134,37 @@ class ReconWorker(QObject):
                 raise JobAborted()
             self.progress_msg.emit(msg)
 
-        # Slice callback: when this job targets a specific slice (multi-slice
-        # selection), force it silently; otherwise fall back to the dialog.
-        if job.get("slice_idx") is not None:
-            _forced = int(job["slice_idx"])
-            slice_cb = lambda _n, _i=_forced: _i          # noqa: E731
-        else:
-            slice_cb = self._request_slice
+        # Scan types whose recon consumes a slice selector (Band/Poisson are
+        # single-slice NUFFT recons).
+        _slice_capable = (SCAN_FULLY_SAMPLED, SCAN_EQUISPACED,
+                          SCAN_RETRO_UNDERSAMPLE, SCAN_UNKNOWN)
 
         try:
             # Add processing package to path (needed when running from 'ui' sub-dir)
             _ensure_processing_on_path()
+
+            # Slice callback: when this job targets a specific slice (multi-slice
+            # tree selection), force it silently. Otherwise ask the user NOW,
+            # via a cheap header-only probe (~0.3 s), BEFORE the full TWIX read —
+            # multi-slice Siemens files take tens of seconds to parse, and the
+            # old flow only popped the dialog afterwards, stalling the queue on
+            # unattended runs.
+            if job.get("slice_idx") is not None:
+                _forced = int(job["slice_idx"])
+                slice_cb = lambda _n, _i=_forced: _i          # noqa: E731
+            elif stype in _slice_capable:
+                from processing.utils import probe_num_slices
+                n_slices = probe_num_slices(job["dat_path"])
+                if n_slices > 1:
+                    cb(f"Multi-slice scan detected ({n_slices} slices) — choose a slice…")
+                    _forced = int(self._request_slice(n_slices))
+                    slice_cb = lambda _n, _i=_forced: _i      # noqa: E731
+                else:
+                    # Header said single-slice (or probe failed): keep the
+                    # in-recon dialog as a safety net for 4-D data.
+                    slice_cb = self._request_slice
+            else:
+                slice_cb = self._request_slice
 
             # Select the reconstruction engine (BART vs sigpy) for this job.
             from processing import recon_backend

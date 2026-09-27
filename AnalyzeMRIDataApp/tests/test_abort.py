@@ -47,6 +47,54 @@ def test_worker_abort_no_result(qapp, phantom_kspace, fake_twix_reader):
     assert any("[ABORTED]" in m for m in events["msgs"])
 
 
+def test_slice_dialog_before_full_read(qapp, phantom_kspace, fake_twix_reader, monkeypatch):
+    """Multi-slice scans must ask for the slice via the cheap header probe
+    BEFORE the full TWIX read (the old flow parsed the whole file first,
+    stalling for tens of seconds before the dialog appeared)."""
+    import numpy as np
+
+    import processing.utils as putils
+    from ui.main_window import ReconWorker
+
+    order = []
+
+    monkeypatch.setattr(
+        putils, "probe_num_slices",
+        lambda _p: (order.append("probe"), 3)[1],
+    )
+
+    reader = phantom_kspace["reader"]
+    multi = np.stack([reader, reader, reader])
+    real_fake = fake_twix_reader(multi)          # installs the fake reader
+
+    import read_siemens_scans.twix_reading as twix_reading
+
+    def _tracking_read(path, fix_oversampling=False, **kw):
+        order.append("read")
+        return real_fake(path, fix_oversampling, **kw)
+
+    monkeypatch.setattr(twix_reading, "read_raw_twix_data", _tracking_read)
+
+    job = {"scan_type": "RETRO_UNDERSAMPLE", "dat_path": "fully_sampled.dat",
+           "folder_key": "T"}
+    params = {"sim_mask_type": "equispaced", "sim_R": 4.0, "sim_acs_lines": 16,
+              "sim_recon_method": "none", "recon_backend": "sigpy", "tse": False}
+    worker = ReconWorker(job, params)
+
+    def _answer(n_slices):
+        order.append("dialog")
+        assert n_slices == 3
+        worker.set_slice_choice(1)
+
+    worker.slice_selection_needed.connect(_answer)
+    results = []
+    worker.result_ready.connect(results.append)
+    worker.run()
+
+    assert order[:3] == ["probe", "dialog", "read"]   # ask first, read after
+    assert len(results) == 1
+
+
 def test_worker_completes_without_abort(qapp, phantom_kspace, fake_twix_reader):
     """Sanity: the same job completes and emits exactly one result when not aborted."""
     fake_twix_reader(phantom_kspace["reader"])
