@@ -1017,7 +1017,10 @@ class MainWindow(QMainWindow):
             "Reconstruction engine: <b>BART</b> when available (native or via WSL "
             "on Windows), otherwise the built-in <b>sigpy</b> engine — see the "
             "Recon engine selector in the parameters panel.<br><br>"
-            "Developed by Saar Drive, Shimron Lab, Technion.",
+            "Developed by Saar Drive, Shimron Lab, Technion.<br><br>"
+            "<i>SHIR is named after — and dedicated to — Shir, my wife, in "
+            "gratitude for her long and unconditional support on my journey to "
+            "become a researcher.</i>",
         )
 
 

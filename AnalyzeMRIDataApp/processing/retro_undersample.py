@@ -520,6 +520,14 @@ def reconstruct_retro(
     diff_image = None
     if recon_image is not None:
         from .imaging import metrics_vs_reference
+        # SENSE / CS-SENSE / ESPIRiT (BART PICS) images sit on an arbitrary
+        # intensity scale; rescale so the recon's 95th percentile matches the
+        # reference before scoring, else the shared-scale metrics and the
+        # difference image are meaningless (mirrors the rescale in poisson_recon).
+        _rec = np.abs(recon_image).astype(np.float32)
+        _r95 = float(np.percentile(_rec.ravel(), 95)) + 1e-12
+        _f95 = float(np.percentile(np.abs(fully_sampled_image).ravel(), 95)) + 1e-12
+        recon_image = (_rec * (_f95 / _r95)).astype(np.float32)
         m = metrics_vs_reference(recon_image, fully_sampled_image, with_diff=True)
         diff_image = m["diff"]
         rmse, psnr, ssim = m["rmse"], m["psnr"], m["ssim"]

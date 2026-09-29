@@ -107,3 +107,10 @@ Third-party components (BART, sigpy, pygrappa, twixtools, the vendored
 repository, itself based on Orel Tsioni's code) remain under their own licenses - see
 [THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md). Full credits are in
 [`AnalyzeMRIDataApp/README.md`](AnalyzeMRIDataApp/README.md).
+
+---
+
+## Dedication
+
+**SHIR** is named after — and dedicated to — **Shir**, my wife, in gratitude for her
+long and unconditional support on my journey to become a researcher.
