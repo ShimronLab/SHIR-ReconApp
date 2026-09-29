@@ -112,5 +112,5 @@ repository, itself based on Orel Tsioni's code) remain under their own licenses 
 
 ## Dedication
 
-**SHIR** is named after — and dedicated to — **Shir**, my wife, in gratitude for her
+**SHIR** is named after, and dedicated to, **Shir**, my wife, in gratitude for her
 long and unconditional support on my journey to become a researcher.
