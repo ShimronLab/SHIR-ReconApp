@@ -10,7 +10,7 @@ nothing in SHIR's license changes their terms.
 | Component | Location | License | Role |
 |---|---|---|---|
 | gGRAPPA | `ggrappa/` | BSD 3-Clause (per its bundled [`ggrappa/LICENSE`](ggrappa/LICENSE); note its `pyproject.toml` metadata says MIT — the LICENSE file governs) | Optional torch-based GRAPPA for the undersampling simulator |
-| read_siemens_scans | `read_siemens_scans/` | Adapted from original code by **Orel Tsioni** (Shimron Lab) | Siemens TWIX `.dat` reading (wraps twixtools) |
+| read_siemens_scans | `read_siemens_scans/` | Adapted from **Alon Granek**'s repository (Shimron Lab), which is based on **Orel Tsioni**'s [`raw_kspace_recon`](https://github.com/orelts/raw_kspace_recon) | Siemens TWIX `.dat` reading (wraps twixtools) |
 
 ## External runtime dependencies (installed via pip, not bundled in the repo)
 
@@ -31,8 +31,3 @@ nothing in SHIR's license changes their terms.
 | Tool | License | Role |
 |---|---|---|
 | [BART](https://mrirecon.github.io/bart) — Berkeley Advanced Reconstruction Toolbox | BSD 3-Clause | Preferred reconstruction engine (`nufft`, `ecalib`, `pics`, …). SHIR calls the user's own BART installation as an external process; BART is not distributed with SHIR. |
-
-## Companion components
-
-The Pulseq sequence files and trajectory JSONs consumed by SHIR were created by
-**Saar Drive & Alon Granek** (Shimron Lab, Technion).

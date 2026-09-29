@@ -103,7 +103,7 @@ which is itself GPL-licensed - distributing SHIR binaries therefore requires
 GPL-compatible terms.
 
 Third-party components (BART, sigpy, pygrappa, twixtools, the vendored
-`ggrappa/`, and the `read_siemens_scans` reader adapted from code by Orel
-Tsioni) remain under their own licenses - see
+`ggrappa/`, and the `read_siemens_scans` reader adapted from Alon Granek's
+repository, itself based on Orel Tsioni's code) remain under their own licenses - see
 [THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md). Full credits are in
 [`AnalyzeMRIDataApp/README.md`](AnalyzeMRIDataApp/README.md).

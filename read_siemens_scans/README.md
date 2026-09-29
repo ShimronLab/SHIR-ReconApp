@@ -37,6 +37,6 @@ images_interp = adjoint_recon(kspace_fixed, dim_data)
 
 ## Acknowledgements
 
-This repo is based on Orel Tsioni's code
-https://github.com/orelts/raw_kspace_recon/tree/master
+This package is adapted from Alon Granek's repository, which is based on
+Orel Tsioni's code: https://github.com/orelts/raw_kspace_recon/tree/master
 
