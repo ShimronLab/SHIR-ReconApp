@@ -810,6 +810,23 @@ def reconstruct_equispaced(
         reference_image = np.sqrt(np.sum(np.abs(ref_imgs) ** 2, axis=2))
         del ref_imgs
 
+        # Coil-sensitivity-combined recons (SENSE / CS-SENSE / ESPIRiT* /
+        # GRAPPA+SENSE) are scored against a MATCHED (SENSE-combined) reference;
+        # an RSS reference would otherwise penalise the coil-combination
+        # difference rather than the reconstruction. Pure GRAPPA outputs RSS, so
+        # it keeps the RSS reference above.
+        if method != "grappa":
+            try:
+                from .reference import load_reference_rss as _load_ref_sense
+                reference_image = _load_ref_sense(
+                    reference_dat_path, combine="sense", slice_idx=_refscan_sl,
+                    expected_nx=n_phase, tse=tse, necho=necho, te1=te1, teeff=teeff,
+                    calib_width=calib_width, log=log,
+                )
+                log("  Using a matched SENSE-combined reference for metrics.")
+            except Exception as _e:
+                log(f"  [WARN] matched SENSE reference failed ({_e}); using RSS.")
+
         # Resize the reference to the recon, flag a sequence/matrix mismatch,
         # and compute the metrics — shared with the Poisson recon.
         from .reference import compare_to_reference

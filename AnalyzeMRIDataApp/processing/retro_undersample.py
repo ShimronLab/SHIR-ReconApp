@@ -311,6 +311,29 @@ def reconstruct_retro(
     # Pre-compute fully-sampled k-space RSS for display
     fs_kspace_rss = np.sqrt(np.sum(np.abs(full_kspace) ** 2, axis=2)).astype(np.float32)
 
+    # Coil-combined recon methods (SENSE / CS-SENSE / ESPIRiT*) produce a
+    # sensitivity-combined image, so compare them against a MATCHED
+    # (SENSE-combined) fully-sampled reference — an RSS reference would penalise
+    # the coil-combination difference, not the reconstruction. Built from the
+    # SAME full k-space so the sizes match; falls back to RSS on any failure.
+    if recon_method not in ("none", "grappa", "ggrappa"):
+        try:
+            from .recon_backend import espirit_maps as _emaps, pics as _pics
+            _k4d = full_kspace[:, :, np.newaxis, :].astype(np.complex64)
+            try:
+                import sigpy as _sp
+                _sc = float(np.percentile(
+                    np.abs(_sp.rss(_sp.ifft(_k4d, axes=(0, 1)), axes=-1)).ravel(), 95))
+            except Exception:
+                _sc = float(np.max(np.abs(_k4d)))
+            _sc = max(_sc, 1e-12)
+            _maps = _emaps(_k4d / _sc, calib_width, num_maps=1, log=log)
+            _ref = _pics(_k4d / _sc, _maps, soft_sense=True, iters=sense_max_iter, log=log)
+            fully_sampled_image = np.abs(np.squeeze(_ref)).astype(np.float32)
+            log("  Using a matched SENSE-combined fully-sampled reference.")
+        except Exception as _e:
+            log(f"  [WARN] matched SENSE reference failed ({_e}); using RSS.")
+
     # ── 3. Build undersampling mask ───────────────────────────────────────────
     axis_label = "RO (L-R)" if swap_pe_read else "PE (A-P)"
     log(f"  Building {mask_type} mask (R={R:.1f}, ACS={acs_lines}, axis={axis_label})…")

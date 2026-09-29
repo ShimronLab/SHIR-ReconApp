@@ -52,10 +52,19 @@ def load_reference_rss(
     necho: Optional[int] = None,
     te1: Optional[float] = None,
     teeff: Optional[float] = None,
+    combine: str = "rss",
+    calib_width: int = 24,
     log: Optional[Callable[[str], None]] = None,
 ) -> np.ndarray:
     """
-    Read a fully-sampled reference TWIX file and return its RSS magnitude image.
+    Read a fully-sampled reference TWIX file and return its magnitude image.
+
+    ``combine="rss"`` (default) returns the root-sum-of-squares image — the right
+    target for RSS-combined recons (e.g. GRAPPA). ``combine="sense"`` returns an
+    ESPIRiT+SENSE coil-combined image (matched to SENSE/CS/ESPIRiT recons); an
+    RSS reference would otherwise penalise the coil-combination difference rather
+    than the reconstruction itself. The SENSE path falls back to RSS if BART/
+    ESPIRiT is unavailable.
 
     Multi-slice (4-D) references pick ``slice_idx`` (or the middle slice).
     Readout oversampling is cropped (best-effort — skipped, not fatal, on an
@@ -63,6 +72,21 @@ def load_reference_rss(
     comparison target is not scrambled.
     """
     log = log or _noop
+
+    if combine == "sense":
+        from .fullysamp_recon import reconstruct_fullysamp
+        _res = reconstruct_fullysamp(
+            str(reference_dat_path), use_sense=True, calib_width=calib_width,
+            expected_nx=expected_nx, tse=tse, necho=necho, te1=te1, teeff=teeff,
+            slice_selector_cb=(None if slice_idx is None
+                               else (lambda _n, _i=slice_idx: int(_i))),
+            progress_cb=log,
+        )
+        _img = _res.get("image_combined")
+        if _img is None:
+            _img = _res.get("image_rss")
+        return np.abs(np.squeeze(_img)).astype(np.float64)
+
     _add_twix_path()
     from read_siemens_scans.twix_reading import read_raw_twix_data
     from .utils import crop_readout_oversampling
@@ -145,6 +169,14 @@ def compare_to_reference(
     if ref.shape != recon.shape:
         zf = (recon.shape[0] / ref.shape[0], recon.shape[1] / ref.shape[1])
         ref = zoom(ref, zf, order=1)
+
+    # Match intensity scales: a coil-combined (BART PICS / SENSE) recon and the
+    # reference can sit on different arbitrary scales, so rescale the recon so its
+    # 95th percentile matches the reference before scoring — otherwise the
+    # shared-scale metrics are meaningless.
+    _r95 = float(np.percentile(recon.ravel(), 95)) + 1e-12
+    _f95 = float(np.percentile(ref.ravel(), 95)) + 1e-12
+    recon = recon * (_f95 / _r95)
 
     m = metrics_vs_reference(recon, ref)
     _ssim_txt = f"{m['ssim']:.4f}" if m["ssim"] is not None else "n/a"

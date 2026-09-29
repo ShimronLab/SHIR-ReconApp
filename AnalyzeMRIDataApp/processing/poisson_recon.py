@@ -126,8 +126,12 @@ def reconstruct_poisson(
             return {}
         try:
             from .reference import load_reference_rss, compare_to_reference
+            # The CS (PICS) recon is coil-sensitivity-combined, so compare it
+            # against a matched SENSE-combined reference; zero-fill is RSS.
+            _combine = "rss" if use_zerofill else "sense"
             ref_img = load_reference_rss(
-                reference_dat_path, slice_idx=None, tse=tse, log=log
+                reference_dat_path, combine=_combine, slice_idx=None, tse=tse,
+                calib_width=calib_width, log=log
             )
             # The recon and the IFFT+RSS reference can sit on different intensity
             # scales, so rescale the recon so its 95th percentile matches the
