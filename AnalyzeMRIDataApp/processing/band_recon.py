@@ -31,6 +31,7 @@ def reconstruct_band(
     scan_fov_m: float = 256e-3,
     crop_size: Optional[int] = None,
     traj_margin: float = 1.0,
+    espirit_crop: float = 0.8,      # ESPIRiT eigenvalue mask threshold (both engines)
     tse: Optional[bool] = None,
     progress_cb: Optional[Callable[[str], None]] = None,
 ) -> Dict[str, Any]:
@@ -158,7 +159,8 @@ def reconstruct_band(
     sens_maps = None
     try:
         log(f"Computing sensitivity maps (ESPIRiT, calib={calib_width})…")
-        sens_maps = espirit_maps(cart_kspace_norm, calib_width, num_maps=1, log=log)
+        sens_maps = espirit_maps(cart_kspace_norm, calib_width, num_maps=1,
+                                 crop=espirit_crop, log=log)
         log("Running PICS (SENSE coil combination)…")
         combined_img = pics(cart_kspace_norm, sens_maps, soft_sense=True, iters=1, log=log)
         combined_sq  = np.squeeze(combined_img)   # (crop, crop) complex

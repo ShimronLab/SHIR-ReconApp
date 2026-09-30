@@ -215,6 +215,7 @@ def reconstruct_retro(
     sense_max_iter: int = 100,
     sense_l2: bool = False,
     espirit_num_maps: int = 2,
+    espirit_crop: float = 0.8,      # ESPIRiT eigenvalue mask threshold (both engines)
     swap_pe_read: bool = False,     # True → undersample Readout (L-R) instead of Phase (A-P)
     rng_seed: Optional[int] = None,
     tse: Optional[bool] = None,
@@ -465,7 +466,8 @@ def reconstruct_retro(
 
                 actual_calib = acs_end - acs_start
                 log(f"  ESPIRiT (calib={actual_calib}, {active_backend_label()})…")
-                sens_maps_out = espirit_maps(k4d_norm, actual_calib, num_maps=1, log=log)
+                sens_maps_out = espirit_maps(k4d_norm, actual_calib, num_maps=1,
+                                             crop=espirit_crop, log=log)
 
                 if recon_method == "sense":
                     sense_img_raw = pics(k4d_norm, sens_maps_out, soft_sense=True,
@@ -497,7 +499,8 @@ def reconstruct_retro(
                 log(f"  ESPIRiT calibration (calib={actual_calib}, maps={espirit_num_maps}, "
                     f"{active_backend_label()})…")
                 sens_maps_out = espirit_maps(k4d_norm, actual_calib,
-                                             num_maps=espirit_num_maps, log=log)
+                                             num_maps=espirit_num_maps,
+                                             crop=espirit_crop, log=log)
 
                 _reg = {"espirit_l2": "Q", "espirit_tv": "T",
                         "espirit_l1": "W", "espirit_l1wav": "W"}.get(recon_method)

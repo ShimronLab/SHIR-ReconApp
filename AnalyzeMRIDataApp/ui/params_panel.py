@@ -55,7 +55,7 @@ class ParamsPanel(QWidget):
         outer.addWidget(scroll)
 
         # ── Common ────────────────────────────────────────────────────────────
-        grp_common = QGroupBox("Common (NUFFT / ESPIRiT)")
+        grp_common = QGroupBox("Common (NUFFT gridding & engine)")
         form_common = QFormLayout(grp_common)
 
         self.spin_grid = QSpinBox()
@@ -99,13 +99,6 @@ class ParamsPanel(QWidget):
         )
         form_common.addRow("Traj margin (px):", self.dspin_traj_margin)
 
-        self.spin_calib = QSpinBox()
-        self.spin_calib.setRange(4, 256)
-        self.spin_calib.setSingleStep(2)
-        self.spin_calib.setValue(24)
-        self.spin_calib.setToolTip("ESPIRiT calibration region width (pixels)")
-        form_common.addRow("ESPIRiT calib width:", self.spin_calib)
-
         self.combo_backend = QComboBox()
         self.combo_backend.addItem("Auto (BART if available)", "auto")
         self.combo_backend.addItem("Force BART",               "bart")
@@ -120,6 +113,39 @@ class ParamsPanel(QWidget):
         form_common.addRow("Recon engine:", self.combo_backend)
 
         vbox.addWidget(grp_common)
+
+        # ── ESPIRiT (shared by every method that estimates coil maps) ──────────
+        grp_espirit = QGroupBox("ESPIRiT coil maps (all methods, both engines)")
+        form_espirit = QFormLayout(grp_espirit)
+
+        self.spin_calib = QSpinBox()
+        self.spin_calib.setRange(4, 256)
+        self.spin_calib.setSingleStep(2)
+        self.spin_calib.setValue(24)
+        self.spin_calib.setToolTip(
+            "ESPIRiT calibration region width (pixels). Applies to every method "
+            "that uses ESPIRiT coil maps: fully-sampled SENSE, equispaced "
+            "SENSE/CS/ESPIRiT, Poisson-disc CS, non-Cartesian band, and the "
+            "simulator."
+        )
+        form_espirit.addRow("ESPIRiT calib width:", self.spin_calib)
+
+        self.dspin_espirit_crop = QDoubleSpinBox()
+        self.dspin_espirit_crop.setRange(0.0, 1.0)
+        self.dspin_espirit_crop.setDecimals(2)
+        self.dspin_espirit_crop.setSingleStep(0.05)
+        self.dspin_espirit_crop.setValue(0.8)
+        self.dspin_espirit_crop.setToolTip(
+            "ESPIRiT eigenvalue mask threshold, applied to BOTH engines "
+            "(BART ecalib -c, sigpy EspiritCalib crop) across ALL ESPIRiT "
+            "methods (fully-sampled SENSE, equispaced, Poisson CS, band, "
+            "simulator).\n"
+            "Lower keeps more (low-SNR) voxels; higher masks more aggressively. "
+            "0.8 matches BART's default and keeps the two engines comparable."
+        )
+        form_espirit.addRow("ESPIRiT crop:", self.dspin_espirit_crop)
+
+        vbox.addWidget(grp_espirit)
 
         # ── Fully Sampled ─────────────────────────────────────────────────────
         grp_fs = QGroupBox("Fully Sampled")
@@ -644,6 +670,7 @@ class ParamsPanel(QWidget):
             "crop_size":    self.spin_crop.value(),   # 0 → auto (from FOV)
             "traj_margin":  self.dspin_traj_margin.value(),
             "calib_width":  self.spin_calib.value(),
+            "espirit_crop": self.dspin_espirit_crop.value(),   # both engines
             "recon_backend": self.combo_backend.currentData(),   # auto | bart | sigpy
             # equispaced
             "equi_method":       self.combo_equi_method.currentData(),

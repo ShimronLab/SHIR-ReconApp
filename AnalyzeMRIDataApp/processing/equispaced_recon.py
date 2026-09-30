@@ -197,6 +197,7 @@ def reconstruct_equispaced(
     sense_l2: bool = False,
     # ESPIRiT params
     espirit_num_maps: int = 2,
+    espirit_crop: float = 0.8,      # ESPIRiT eigenvalue mask threshold (both engines)
     # TSE un-scramble (echo-train order → true PE order)
     tse: Optional[bool] = None,
     necho: Optional[int] = None,
@@ -618,7 +619,8 @@ def reconstruct_equispaced(
 
                 actual_calib = acs_end - acs_start
                 log(f"  ESPIRiT calibration (calib={actual_calib})…")
-                sens_maps_out = espirit_maps(k4d_norm, actual_calib, num_maps=1, log=log)
+                sens_maps_out = espirit_maps(k4d_norm, actual_calib, num_maps=1,
+                                         crop=espirit_crop, log=log)
                 log(f"  Sensitivity maps shape: {sens_maps_out.shape}")
 
                 # Optimal coil combination: image = sum(conj(S) * C_i) / sqrt(sum(|S|^2))
@@ -654,7 +656,8 @@ def reconstruct_equispaced(
 
             actual_calib = acs_end - acs_start   # ACS width from JSON/mask
             log(f"  Computing sensitivity maps (ESPIRiT, calib={actual_calib})…")
-            sens_maps_out = espirit_maps(k4d_norm, actual_calib, num_maps=1, log=log)
+            sens_maps_out = espirit_maps(k4d_norm, actual_calib, num_maps=1,
+                                         crop=espirit_crop, log=log)
 
             if method == "sense":
                 log(f"  Running PICS {'SENSE + L2' if sense_l2 else 'pure SENSE'} (iters={sense_max_iter})…")
@@ -703,7 +706,8 @@ def reconstruct_equispaced(
             actual_calib = acs_end - acs_start
             log(f"  ESPIRiT calibration (calib={actual_calib}, maps={espirit_num_maps})…")
             sens_maps_out = espirit_maps(k4d_norm, actual_calib,
-                                         num_maps=espirit_num_maps, log=log)
+                                         num_maps=espirit_num_maps,
+                                         crop=espirit_crop, log=log)
 
             _reg = {"espirit_l2": "Q", "espirit_tv": "T",
                     "espirit_l1": "W", "espirit_l1wav": "W"}.get(method)

@@ -217,6 +217,7 @@ def _reconstruct_cs_pattern(
     calib_width: int,
     lambda_wav: float,
     max_iter: int,
+    espirit_crop: float = 0.8,
     tse: Optional[bool],
     necho: Optional[int],
     te1: Optional[float],
@@ -292,7 +293,8 @@ def _reconstruct_cs_pattern(
         k4d_norm = k4d / (np.max(np.abs(k4d)) + 1e-12)
 
     log(f"Computing ESPIRiT sensitivity maps (calib={calib_width})…")
-    sens_maps = espirit_maps(k4d_norm, calib_width, num_maps=1, log=log)
+    sens_maps = espirit_maps(k4d_norm, calib_width, num_maps=1,
+                             crop=espirit_crop, log=log)
     log(f"Running CS PICS (λ_wav={lambda_wav}, iters={max_iter}, "
         f"{active_backend_label()})…")
     combined = np.abs(np.squeeze(pics(
@@ -328,6 +330,7 @@ def reconstruct_generic(
     scan_fov_m: float = 256e-3,
     crop_size: Optional[int] = None,
     traj_margin: float = 1.0,
+    espirit_crop: float = 0.8,      # ESPIRiT eigenvalue mask threshold (both engines)
     lambda_wav: float = 0.01,
     max_iter: int = 100,
     tse: Optional[bool] = None,
@@ -413,7 +416,8 @@ def reconstruct_generic(
             return _reconstruct_cs_pattern(
                 dat_path,
                 calib_width=calib_width, lambda_wav=lambda_wav,
-                max_iter=max_iter, tse=tse, necho=necho, te1=te1, teeff=teeff,
+                max_iter=max_iter, espirit_crop=espirit_crop,
+                tse=tse, necho=necho, te1=te1, teeff=teeff,
                 log=log, slice_selector_cb=slice_selector_cb,
             )
         except Exception as exc:

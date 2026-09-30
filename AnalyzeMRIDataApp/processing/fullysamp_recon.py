@@ -35,6 +35,7 @@ def reconstruct_fullysamp(
     *,
     use_sense: bool = False,
     calib_width: int = 24,
+    espirit_crop: float = 0.8,      # ESPIRiT eigenvalue mask threshold (both engines)
     expected_nx: Optional[int] = None,
     tse: Optional[bool] = None,
     necho: Optional[int] = None,
@@ -156,7 +157,8 @@ def reconstruct_fullysamp(
                 k4d_norm = k4d / (np.max(np.abs(k4d)) + 1e-12)
 
             log(f"  Computing sensitivity maps (ESPIRiT, calib={calib_width})…")
-            sens_maps = espirit_maps(k4d_norm, calib_width, num_maps=1, log=log)
+            sens_maps = espirit_maps(k4d_norm, calib_width, num_maps=1,
+                                     crop=espirit_crop, log=log)
 
             log("  Running PICS (SENSE coil combination)…")
             combined_raw   = pics(k4d_norm, sens_maps, soft_sense=True, log=log)

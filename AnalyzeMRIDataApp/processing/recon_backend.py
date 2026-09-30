@@ -47,6 +47,11 @@ from .utils import BartTempDir, readcfl, run_bart, writecfl
 _VALID_MODES = ("auto", "bart", "sigpy")
 _backend_mode = "auto"
 
+# ESPIRiT eigenvalue crop threshold for the SigPy path. SigPy's EspiritCalib
+# defaults to 0.95 (much harsher than BART's ecalib 0.8), which masks out real
+# tissue on lower-SNR data and leaves signal-void holes in the recon. Match BART.
+ESPIRIT_CROP = 0.8
+
 
 def set_backend_mode(mode: str) -> None:
     """Set the process-global recon backend mode ('auto' | 'bart' | 'sigpy')."""
@@ -158,22 +163,33 @@ def espirit_maps(
     calib: int,
     num_maps: int = 1,
     *,
+    crop: Optional[float] = None,
     log: Optional[Callable[[str], None]] = None,
 ) -> np.ndarray:
     """
     ESPIRiT calibration. Returns sens maps in BART layout
     (Nread, Nphase, 1, Ncoils) — or (…, Ncoils, Nmaps) for BART multi-map.
 
-    BART:  ecalib -r{calib}:{calib}:1 -m{num_maps}
+    BART:  ecalib -r{calib}:{calib}:1 -c{crop} -m{num_maps}
     sigpy: sigpy.mri.app.EspiritCalib (single map set)
+
+    `crop` is the eigenvalue mask threshold, applied identically to BOTH engines
+    so they stay a fair, apples-to-apples pair (default ESPIRIT_CROP = 0.8).
+    SigPy's EspiritCalib otherwise defaults to 0.95 — much harsher than BART's
+    ecalib (0.8) — which on lower-SNR data zeroes out genuine tissue voxels and
+    leaves signal-void "holes" in the reconstruction. Exposed so users can tune
+    the calibration aggressiveness for both engines from one control.
     """
     log = log or _noop
+    if crop is None:
+        crop = ESPIRIT_CROP
     if use_bart():
         with BartTempDir("bart_ecalib_") as tmp:
             ksp_cfl = os.path.join(tmp, "ksp")
             sens_cfl = os.path.join(tmp, "sens")
             writecfl(ksp_cfl, k4d_norm)
-            run_bart("ecalib", f"-r{calib}:{calib}:1", f"-m{num_maps}", ksp_cfl, sens_cfl)
+            run_bart("ecalib", f"-r{calib}:{calib}:1", f"-c{crop}", f"-m{num_maps}",
+                     ksp_cfl, sens_cfl)
             return readcfl(sens_cfl)
 
     # sigpy fallback
@@ -181,8 +197,9 @@ def espirit_maps(
     if num_maps > 1:
         log(f"  sigpy ESPIRiT: using a single map set (BART -m{num_maps} not reproduced).")
     ksp_c = _k4d_to_coilfirst(k4d_norm)              # (Ncoils, Nread, Nphase)
-    log(f"  sigpy EspiritCalib (calib={calib})…")
-    mps = mr.app.EspiritCalib(ksp_c, calib_width=calib, show_pbar=False).run()
+    log(f"  sigpy EspiritCalib (calib={calib}, crop={crop})…")
+    mps = mr.app.EspiritCalib(ksp_c, calib_width=calib, crop=crop,
+                              show_pbar=False).run()
     mps = np.asarray(mps)
     return _coilfirst_maps_to_bart(mps)              # (Nread, Nphase, 1, Ncoils)
 

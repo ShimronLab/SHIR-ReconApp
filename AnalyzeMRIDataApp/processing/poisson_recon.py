@@ -61,6 +61,7 @@ def reconstruct_poisson(
     scan_fov_m: float = 256e-3,
     crop_size: Optional[int] = None,
     traj_margin: float = 1.0,
+    espirit_crop: float = 0.8,      # ESPIRiT eigenvalue mask threshold (both engines)
     lambda_wav: float = 0.01,
     max_iter: int = 100,
     use_zerofill: bool = False,
@@ -261,7 +262,8 @@ def reconstruct_poisson(
     sens_maps = None
     try:
         log(f"Computing ESPIRiT sensitivity maps (calib={calib}, {active_backend_label()})…")
-        sens_maps = espirit_maps(k4d_norm, calib, num_maps=1, log=log)
+        sens_maps = espirit_maps(k4d_norm, calib, num_maps=1,
+                                 crop=espirit_crop, log=log)
         log(f"Running CS PICS (ℓ1-wavelet, λ={lambda_wav}, iters={max_iter}, "
             f"{active_backend_label()})…")
         recon = pics(k4d_norm, sens_maps, reg="W", lam=lambda_wav,
