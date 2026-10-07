@@ -185,8 +185,27 @@ def reconstruct_poisson(
     ky_line = traj_raw[:, 1].reshape(n_lines, n_read0)[:, 0]     # one ky per line
     uy = np.sort(np.unique(np.round(ky_line, 6)))
     dky = float(np.min(np.diff(uy))) if uy.size > 1 else 1.0     # PE grid step (1/FOV)
-    n_phase = int(round((uy[-1] - uy[0]) / dky)) + 1             # PE matrix size
-    pe_idx = np.clip(np.round((ky_line - uy[0]) / dky).astype(int), 0, n_phase - 1)
+
+    # Prescribed matrix from the READOUT extent (always fully sampled), not from
+    # the ky span: a VD pattern need not sample the outermost PE lines, and
+    # sizing the grid from the ky span then shrank it (e.g. 166 instead of 256)
+    # and made the readout-OS crop halve a non-oversampled readout (zoomed-in,
+    # half-FOV image). ADC samples per line = n_x × readout-OS factor.
+    kx_line = traj_raw[:, 0].reshape(n_lines, n_read0)[0]
+    n_x_traj = int(round((kx_line.max() - kx_line.min()) / dky)) + 1
+    os_read = max(1, int(round(n_read0 / max(n_x_traj, 1))))
+    n_x = n_read0 // os_read
+
+    # PE index on a grid centred at k=0 (FFT convention: DC at n_phase // 2).
+    # The pattern may carry a sub-step centring shift (ky/dky not integer), so
+    # remove the common fractional offset before rounding.
+    ky_steps = ky_line / dky
+    frac = float(np.median(ky_steps - np.round(ky_steps)))
+    pe_rel = np.round(ky_steps - frac).astype(int)
+    n_phase = max(n_x, 2 * max(-int(pe_rel.min()), int(pe_rel.max()) + 1))
+    pe_idx = pe_rel + n_phase // 2
+    log(f"  matrix {n_x}×{n_phase} (readout from kx extent, OS×{os_read}); "
+        f"sampled ky lines span PE indices {pe_idx.min()}…{pe_idx.max()}")
     pe_mask = np.zeros(n_phase, dtype=bool)
     pe_mask[pe_idx] = True
     n_sampled = int(pe_mask.sum())
@@ -196,7 +215,7 @@ def reconstruct_poisson(
 
     # ── 3. Crop readout oversampling, then place acquired lines ──────────────
     kspace_orig = crop_readout_oversampling(
-        kspace_orig, expected_nx=n_phase, readout_axis=2, log_fn=log,
+        kspace_orig, expected_nx=n_x, readout_axis=2, log_fn=log,
     )
     n_read = kspace_orig.shape[2]
     full_k = np.zeros((n_read, n_phase, n_coils), dtype=np.complex64)
