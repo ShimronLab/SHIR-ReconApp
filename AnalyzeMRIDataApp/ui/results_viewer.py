@@ -15,6 +15,7 @@ from matplotlib.figure import Figure
 from PyQt5.QtCore import Qt, pyqtSignal
 from PyQt5.QtWidgets import (
     QCheckBox,
+    QComboBox,
     QDialog,
     QDialogButtonBox,
     QDoubleSpinBox,
@@ -91,6 +92,44 @@ class _ImageSelectDialog(QDialog):
 
     def selected_indices(self) -> list:
         return [i for i, cb in enumerate(self._checkboxes) if cb.isChecked()]
+
+
+# Reference-orientation choices, labelled as the operation the user SEES on screen
+# (relative to the reference as loaded). Keys are the array-level ops of
+# processing.reference.ORIENTATIONS; since a tab draws arrays with a base rot90
+# (plus its Rotate button), a screen op maps to a different array op — see
+# _screen_to_array_orient.
+_ORIENT_LABELS = {
+    "none":          "As loaded",
+    "rot90":         "Rotate 90° CCW",
+    "rot180":        "Rotate 180°",
+    "rot270":        "Rotate 90° CW",
+    "fliplr":        "Flip left-right",
+    "flipud":        "Flip up-down",
+    "transpose":     "Mirror ↘ diagonal",
+    "antitranspose": "Mirror ↙ diagonal",
+}
+
+
+def _screen_to_array_orient(screen_key: str, k: int) -> str:
+    """Array op A such that drawing A(ref) rotated by k shows screen op S of the
+    drawn reference: rot90(A(x), k) == S(rot90(x, k))."""
+    from processing.reference import orient_image
+    x = np.arange(15.0).reshape(3, 5)          # asymmetric probe
+    want = orient_image(np.rot90(x, k), screen_key)
+    for a in _ORIENT_LABELS:
+        got = np.rot90(orient_image(x, a), k)
+        if got.shape == want.shape and np.array_equal(got, want):
+            return a
+    raise AssertionError(f"no array op for screen op {screen_key} (k={k})")
+
+
+def _array_to_screen_orient(array_key: str, k: int) -> str:
+    """Inverse of :func:`_screen_to_array_orient`."""
+    for sk in _ORIENT_LABELS:
+        if _screen_to_array_orient(sk, k) == array_key:
+            return sk
+    raise AssertionError(f"no screen op for array op {array_key} (k={k})")
 
 
 def _norm(img: np.ndarray) -> np.ndarray:
@@ -255,6 +294,26 @@ class ReconTab(QWidget):
         )
         btn_rotate.clicked.connect(self._on_rotate)
 
+        # Reference orientation — orients ONLY the fully-sampled reference to the
+        # recon and re-scores (metrics + difference map). Auto picks the best of
+        # the 8 rotations/flips at recon time; a manual choice overrides it.
+        self._lbl_ref_orient = QLabel("Ref orient:")
+        self._combo_ref_orient = QComboBox()
+        self._combo_ref_orient.addItem("Auto", "auto")
+        for _key, _lbl in _ORIENT_LABELS.items():
+            self._combo_ref_orient.addItem(_lbl, _key)
+        self._combo_ref_orient.setToolTip(
+            "Orientation of the fully-sampled reference relative to the recon.\n"
+            "A scan whose readout/phase axes differ from the reference's comes\n"
+            "out rotated or mirrored, so the reference is re-oriented to match\n"
+            "it BEFORE SSIM/NMSE/PSNR and the difference map are computed.\n"
+            "Auto: best of the 8 rotations/flips by correlation (default).\n"
+            "Other entries force that rotation/flip of the reference as loaded.\n"
+            "Only the reference moves; the recon is untouched. Also used in the\n"
+            "PDF report."
+        )
+        self._combo_ref_orient.activated.connect(self._on_ref_orient_changed)
+
         # Export button
         btn_export = QPushButton("Export PNG…")
         btn_export.clicked.connect(self._export_png)
@@ -334,6 +393,9 @@ class ReconTab(QWidget):
         ctrl_row.addWidget(self._lbl_dil)
         ctrl_row.addWidget(self._spin_dil)
         ctrl_row.addSpacing(12)
+        ctrl_row.addWidget(self._lbl_ref_orient)
+        ctrl_row.addWidget(self._combo_ref_orient)
+        ctrl_row.addSpacing(12)
         ctrl_row.addWidget(btn_rotate)
         ctrl_row.addWidget(btn_export)
 
@@ -358,6 +420,11 @@ class ReconTab(QWidget):
             w.setVisible(_masked_ok)
         if _masked_ok:
             self._capture_eq_base()
+        _orient_ok = _masked_ok and self._result.get("reference_image_raw") is not None
+        self._lbl_ref_orient.setVisible(_orient_ok)
+        self._combo_ref_orient.setVisible(_orient_ok)
+        if _orient_ok:
+            self._sync_ref_orient_combo()
 
     # ─── Drawing ─────────────────────────────────────────────────────────────
 
@@ -391,7 +458,77 @@ class ReconTab(QWidget):
     def _on_rotate(self) -> None:
         """Rotate every image in this tab by another 90° and redraw."""
         self._rotation = (self._rotation + 1) % 4
+        self._sync_ref_orient_combo()
         self._draw()
+
+    # ─── Reference orientation ───────────────────────────────────────────────
+
+    def _display_k(self) -> int:
+        """Total 90° CCW turns between a result array and what is on screen:
+        the layout's base rot90 (equispaced draws np.rot90) + the Rotate button."""
+        base = 1 if self._result.get("scan_type") == SCAN_EQUISPACED else 0
+        return (base + self._rotation) % 4
+
+    def _sync_ref_orient_combo(self) -> None:
+        """Relabel the combo for the current screen rotation: the Auto entry
+        names what auto picked, and a manual selection keeps describing the SAME
+        (unchanged) reference — a screen-space flip relabels when rotated."""
+        a = self._result.get("reference_orientation")
+        if a is None:
+            return
+        screen = _array_to_screen_orient(a, self._display_k())
+        combo = self._combo_ref_orient
+        combo.setItemText(0, f"Auto ({_ORIENT_LABELS[screen].lower()})")
+        if combo.currentData() != "auto":
+            combo.blockSignals(True)
+            combo.setCurrentIndex(combo.findData(screen))
+            combo.blockSignals(False)
+
+    def _ref_orient_note(self):
+        """Short 'Ref …' line for the metrics panel, or None if untouched."""
+        a = self._result.get("reference_orientation")
+        if not a or a == "none":
+            return None
+        lbl = _ORIENT_LABELS[_array_to_screen_orient(a, self._display_k())]
+        how = "auto" if self._result.get("reference_orientation_auto") else "manual"
+        note = f"Ref oriented: {lbl.lower()} ({how})"
+        if self._result.get("reference_orientation_ambiguous"):
+            note += "\n⚠ close call — check visually"
+        return note
+
+    def _on_ref_orient_changed(self, _index=None) -> None:
+        """Re-orient the reference (auto or forced), re-score, and redraw."""
+        if self._eq_base is None:
+            return
+        r = self._result
+        data = self._combo_ref_orient.currentData()
+        orient = data if data == "auto" else _screen_to_array_orient(data, self._display_k())
+        from processing.reference import compare_to_reference
+        try:
+            cmp = compare_to_reference(
+                self._eq_base["recon"], r["reference_image_raw"],
+                recon_name=r.get("recon_name", ""),
+                reference_name=r.get("reference_name", ""),
+                orientation=orient,
+            )
+        except Exception as exc:
+            QMessageBox.warning(self, "Reference orientation",
+                                f"Could not re-orient the reference:\n{exc}")
+            return
+        for key in ("reference_image", "reference_orientation",
+                    "reference_orientation_auto",
+                    "reference_orientation_ambiguous", "reference_warning",
+                    "ssim", "nmse", "psnr", "rmse"):
+            r[key] = cmp[key]
+        self._eq_base["ref"] = np.asarray(cmp["reference_image"]).copy()
+        self._sync_ref_orient_combo()
+
+        if r.get("scan_type") == SCAN_POISSON:
+            self._apply_poisson_masked()            # recomputes ROI metrics + redraws
+        elif self._eq_center_on or self._eq_crop_on or self._eq_masked_on:
+            self._apply_eq_transforms()
+        else:
+            self._draw()
 
     def _apply_rotation(self) -> None:
         """
@@ -532,6 +669,9 @@ class ReconTab(QWidget):
             elif r.get("_mask_error"):
                 txt += f"\n\nMasked: error\n{r.get('_mask_error')}"
 
+            _onote = self._ref_orient_note()
+            if _onote:
+                txt += f"\n\n{_onote}"
             if r.get("reference_warning"):
                 txt += "\n\n⚠ reference mismatch:\nmetrics reflect sequence/\nFOV differences too."
             axes[1, 2].text(0.5, 0.5, txt, ha="center", va="center",
@@ -762,6 +902,9 @@ class ReconTab(QWidget):
             align_note = r.get("_eq_align_note")
             if align_note:
                 metric_text += f"\n\n[aligned: {align_note}]"
+            _onote = self._ref_orient_note()
+            if _onote:
+                metric_text += f"\n\n{_onote}"
             axes[1, 2].text(
                 0.1, 0.5,
                 metric_text,

@@ -783,6 +783,7 @@ def reconstruct_equispaced(
     reference_image = None
     rmse = psnr = ssim = None
     reference_warning = None
+    _ref_orient_keys: Dict[str, Any] = {}
 
     if reference_dat_path is not None:
         log(f"Loading reference: {Path(reference_dat_path).name}")
@@ -843,6 +844,10 @@ def reconstruct_equispaced(
         reference_image   = _cmp["reference_image"]
         rmse, psnr, ssim  = _cmp["rmse"], _cmp["psnr"], _cmp["ssim"]
         reference_warning = _cmp["reference_warning"]
+        _ref_orient_keys = {k: _cmp[k] for k in (
+            "reference_image_raw", "reference_orientation",
+            "reference_orientation_auto", "reference_orientation_ambiguous",
+            "recon_name", "reference_name")}
 
     from .constants import method_label as _mlabel
     log(f"{_mlabel(method)} reconstruction complete.")
@@ -865,6 +870,7 @@ def reconstruct_equispaced(
         "psnr":                    psnr,
         "ssim":                    ssim,
         "reference_warning":       reference_warning,
+        **_ref_orient_keys,
         "method":                  method,
         "mask_method": mask_method,
         "params": {

@@ -163,13 +163,21 @@ The app retrospectively applies the chosen mask to the fully-sampled k-space and
   (`… — slice k/N`). Cartesian recons only (Band/Poisson are single-slice).
 - **Set reference ▸** — override the automatic fully-sampled reference used for
   the Equispaced/Poisson difference + SSIM/NMSE/PSNR (pick a detected
-  fully-sampled scan, browse for a `.dat`, or restore Auto).
+  fully-sampled scan, browse for a `.dat`, or restore Auto). Auto prefers the
+  fully-sampled scan with the same swapPE-ness as the scan (a `swapPE`
+  reference has readout/phase swapped, i.e. a rotated image).
 
 ### 5. View results
 Each completed reconstruction appears as a new **tab** in the results viewer:
 - **W/L sliders** — adjust image window/level (min%/max% of data range).
 - **⟳ Rotate 90°** — rotate all images in the tab (per-tab); the chosen
   orientation is also applied in the PDF report.
+- **Ref orient** (Equispaced/Poisson with a reference) — orientation of the
+  fully-sampled reference relative to the recon. **Auto** tries all 8
+  rotations/flips and keeps the best-correlated one (shown in the dropdown and
+  under the metrics; a near-tie is flagged "close call"); pick another entry to
+  force it. Only the reference moves, and the difference map + SSIM/NMSE/PSNR
+  are recomputed instantly (no re-run).
 - **matplotlib toolbar** — zoom, pan, save individual figures.
 - **All Coils** button — open a grid of all per-coil images for the active tab.
 

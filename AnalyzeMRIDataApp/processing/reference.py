@@ -6,8 +6,13 @@ fully-sampled reference (image + absolute difference + SSIM/NMSE/PSNR). The
 metric/resize/mismatch-warning logic lives here so both use identical behavior.
 
 - ``load_reference_rss``   : read a reference .dat → RSS magnitude image.
-- ``compare_to_reference`` : resize the reference to the recon, flag a
-  sequence/matrix mismatch, and compute 95th-percentile-normalised metrics.
+- ``compare_to_reference`` : orient the reference to the recon (auto or forced),
+  resize it, flag a sequence/matrix mismatch, and compute
+  95th-percentile-normalised metrics.
+- ``orient_image`` / ``auto_orient_reference`` : the 8 rotate/flip orientations
+  and the correlation-based picker. Needed because a scan whose readout/PE axes
+  are swapped relative to the reference (e.g. a Pulseq sequence vs the scanner's
+  own fully-sampled one) comes out rotated/mirrored in the (read, phase) array.
 """
 
 from pathlib import Path
@@ -120,29 +125,115 @@ def load_reference_rss(
     return np.sqrt(np.sum(np.abs(imgs) ** 2, axis=2))
 
 
+# The 8 orientations of a 2-D array (the dihedral group), as array operations.
+# "none" first: auto-orientation prefers it on (near-)ties.
+ORIENTATIONS = {
+    "none":          lambda a: a,
+    "rot90":         lambda a: np.rot90(a, 1),
+    "rot180":        lambda a: np.rot90(a, 2),
+    "rot270":        lambda a: np.rot90(a, 3),
+    "flipud":        lambda a: a[::-1, :],
+    "fliplr":        lambda a: a[:, ::-1],
+    "transpose":     lambda a: a.T,
+    "antitranspose": lambda a: np.rot90(a, 2).T,
+}
+
+# Auto keeps the reference as-is unless another orientation correlates better
+# by at least this much (guards against flipping a near-symmetric head on noise).
+_AUTO_ORIENT_MARGIN = 0.02
+
+
+def orient_image(img: np.ndarray, orientation: str) -> np.ndarray:
+    """Apply one of :data:`ORIENTATIONS` (array-level) to a 2-D image."""
+    if orientation not in ORIENTATIONS:
+        raise ValueError(f"Unknown orientation '{orientation}' "
+                         f"(expected one of {list(ORIENTATIONS)}).")
+    return np.ascontiguousarray(ORIENTATIONS[orientation](img))
+
+
+def _resize_to(img: np.ndarray, shape) -> np.ndarray:
+    if img.shape == tuple(shape):
+        return img
+    from scipy.ndimage import zoom
+    return zoom(img, (shape[0] / img.shape[0], shape[1] / img.shape[1]), order=1)
+
+
+def auto_orient_reference(recon: np.ndarray, ref: np.ndarray) -> Dict[str, Any]:
+    """
+    Pick the orientation of ``ref`` that best matches ``recon``.
+
+    Scores every orientation by the Pearson correlation of the magnitude images
+    (reference resized to the recon's shape), keeps ``"none"`` unless another
+    orientation wins by :data:`_AUTO_ORIENT_MARGIN`. ``ambiguous`` is True when
+    the pick is not "none" and the runner-up is within that margin (typically a
+    mirror pair on a near-symmetric head) — the user should check it. Returns
+    ``{"orientation": key, "scores": {key: corr}, "ambiguous": bool}``.
+    """
+    rec = np.abs(np.squeeze(recon)).astype(float).ravel()
+    rec = (rec - rec.mean()) / (rec.std() + 1e-12)
+    ref = np.abs(np.squeeze(ref)).astype(float)
+
+    scores: Dict[str, float] = {}
+    for key in ORIENTATIONS:
+        o = _resize_to(orient_image(ref, key), recon.shape).ravel()
+        o = (o - o.mean()) / (o.std() + 1e-12)
+        scores[key] = float(np.mean(rec * o))
+
+    ranked = sorted(scores, key=scores.get, reverse=True)
+    best = ranked[0]
+    if scores[best] - scores["none"] < _AUTO_ORIENT_MARGIN:
+        best = "none"
+    ambiguous = (best != "none"
+                 and scores[best] - scores[ranked[1]] < _AUTO_ORIENT_MARGIN)
+    return {"orientation": best, "scores": scores, "ambiguous": ambiguous}
+
+
 def compare_to_reference(
     recon_image: np.ndarray,
     reference_image: np.ndarray,
     *,
     recon_name: str,
     reference_name: str,
+    orientation: str = "auto",
     log: Optional[Callable[[str], None]] = None,
 ) -> Dict[str, Any]:
     """
     Compare a recon image to a fully-sampled reference.
 
-    Resizes the reference to the recon's shape, warns on a sequence/matrix
-    mismatch, and computes RMSE / NMSE / PSNR / SSIM on a shared 95th-percentile
-    scale. Returns the (resized) ``reference_image`` plus the metrics and an
-    optional ``reference_warning``.
+    Orients the reference to the recon (``orientation="auto"`` picks the best of
+    the 8 rotations/flips by correlation; any :data:`ORIENTATIONS` key forces
+    one), resizes it to the recon's shape, warns on a sequence/matrix mismatch,
+    and computes RMSE / NMSE / PSNR / SSIM on a shared 95th-percentile scale.
+    Returns the (oriented, resized) ``reference_image``, the untouched
+    ``reference_image_raw`` plus ``recon_name`` / ``reference_name`` (so a viewer
+    can re-run this without re-reading), the applied ``reference_orientation`` /
+    ``reference_orientation_auto``, the metrics and an optional
+    ``reference_warning``.
     """
     log = log or _noop
-    from scipy.ndimage import zoom
 
     from .imaging import metrics_vs_reference
 
     recon = np.abs(np.squeeze(recon_image)).astype(float)
-    ref = np.abs(np.squeeze(reference_image)).astype(float)
+    ref_raw = np.abs(np.squeeze(reference_image)).astype(np.float32)
+
+    is_auto = orientation == "auto"
+    ambiguous = False
+    if is_auto:
+        _ao = auto_orient_reference(recon, ref_raw)
+        orientation = _ao["orientation"]
+        ambiguous = _ao["ambiguous"]
+        _sc = "  ".join(f"{k}={v:+.3f}" for k, v in _ao["scores"].items())
+        log(f"  Reference orientation scores (corr): {_sc}")
+        if orientation != "none":
+            log(f"  Reference auto-oriented to the recon: {orientation} "
+                f"(readout/PE axes likely differ between the two scans).")
+        if ambiguous:
+            log("  [WARN] Reference orientation is a close call (mirror "
+                "ambiguity) — check it visually and override in the viewer.")
+    elif orientation != "none":
+        log(f"  Reference orientation forced: {orientation}")
+    ref = orient_image(ref_raw, orientation).astype(float)
     ref_orig_shape = ref.shape
 
     recon_seq, ref_seq = _seq_kind(recon_name), _seq_kind(reference_name)
@@ -166,9 +257,7 @@ def compare_to_reference(
         )
         log(f"  WARNING: {warning}")
 
-    if ref.shape != recon.shape:
-        zf = (recon.shape[0] / ref.shape[0], recon.shape[1] / ref.shape[1])
-        ref = zoom(ref, zf, order=1)
+    ref = _resize_to(ref, recon.shape)
 
     # Match intensity scales: a coil-combined (BART PICS / SENSE) recon and the
     # reference can sit on different arbitrary scales, so rescale the recon so its
@@ -184,6 +273,12 @@ def compare_to_reference(
         f"PSNR={m['psnr']:.2f} dB  SSIM={_ssim_txt}")
     return {
         "reference_image":   ref,
+        "reference_image_raw":        ref_raw,
+        "reference_orientation":      orientation,
+        "reference_orientation_auto": is_auto,
+        "reference_orientation_ambiguous": ambiguous,
+        "recon_name":        recon_name,
+        "reference_name":    reference_name,
         "ssim":              m["ssim"],
         "nmse":              m["nmse"],
         "psnr":              m["psnr"],

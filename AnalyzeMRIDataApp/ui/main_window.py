@@ -1046,6 +1046,11 @@ def _attach_references(jobs: List[Dict]) -> List[Dict]:
     Siemens GRAPPA scans (filenames containing "t1_fl2d_tra", "Siemens_", or
     "_equispaced_R") are routed to the Siemens SE reference; all other scans
     are routed to the custom fully-sampled reference.
+
+    When a folder holds several custom fully-sampled scans, the one whose
+    swapPE-ness matches the scan is preferred: a swapPE reference has readout
+    and phase swapped, so pairing it with a non-swapPE scan (or vice versa)
+    compares a rotated/mirrored image and wrecks the metrics.
     """
     import re as _re
     _SIEMENS_GRAPPA = _re.compile(
@@ -1058,15 +1063,18 @@ def _attach_references(jobs: List[Dict]) -> List[Dict]:
         r"(grappa|fl2d|equispaced|poisson|band)", _re.IGNORECASE
     )
 
+    def _is_swap(path: str) -> bool:
+        return "swappe" in Path(path).name.lower()
+
     # Build per-folder reference maps
-    fs_map: Dict[str, str]         = {}   # custom fully-sampled
+    fs_map: Dict[str, List[str]]   = {}   # custom fully-sampled (all candidates)
     siemens_se_map: Dict[str, str] = {}   # Siemens SE
 
     for j in jobs:
         dat_dir = str(Path(j["dat_path"]).parent)
         fname   = Path(j["dat_path"]).name
         if j["scan_type"] == SCAN_FULLY_SAMPLED:
-            fs_map[dat_dir] = j["dat_path"]
+            fs_map.setdefault(dat_dir, []).append(j["dat_path"])
         elif _SIEMENS_SE.search(fname) and not _GRAPPA_SE_EXCLUSION.search(fname):
             siemens_se_map[dat_dir] = j["dat_path"]
 
@@ -1080,13 +1088,21 @@ def _attach_references(jobs: List[Dict]) -> List[Dict]:
         if dat_dir_str not in fs_map:
             candidates = sorted(dat_dir.glob("*fully_sampled*.dat"))
             if candidates:
-                fs_map[dat_dir_str] = str(candidates[0])
+                fs_map[dat_dir_str] = [str(c) for c in candidates]
 
         if dat_dir_str not in siemens_se_map:
             for f in sorted(dat_dir.glob("*.dat")):
                 if _SIEMENS_SE.search(f.name) and not _GRAPPA_SE_EXCLUSION.search(f.name):
                     siemens_se_map[dat_dir_str] = str(f)
                     break
+
+    def _custom_ref(dat_dir: str, scan_path: str) -> Optional[str]:
+        """Custom fully-sampled reference with matching swapPE-ness (else any)."""
+        cands = sorted(fs_map.get(dat_dir, []))
+        if not cands:
+            return None
+        same = [c for c in cands if _is_swap(c) == _is_swap(scan_path)]
+        return (same or cands)[0]
 
     for j in jobs:
         # A user-set reference (folder-panel "Set reference") is never overwritten.
@@ -1097,17 +1113,17 @@ def _attach_references(jobs: List[Dict]) -> List[Dict]:
             fname   = Path(j["dat_path"]).name
             if _SIEMENS_GRAPPA.search(fname):
                 # Siemens GRAPPA scan → prefer Siemens SE, fall back to custom
-                ref = siemens_se_map.get(dat_dir) or fs_map.get(dat_dir)
+                ref = siemens_se_map.get(dat_dir) or _custom_ref(dat_dir, j["dat_path"])
             else:
                 # Custom scan → prefer custom fully-sampled
-                ref = fs_map.get(dat_dir) or siemens_se_map.get(dat_dir)
+                ref = _custom_ref(dat_dir, j["dat_path"]) or siemens_se_map.get(dat_dir)
             if ref:
                 j["reference_dat_path"] = ref
         elif j["scan_type"] == SCAN_POISSON:
             # Poisson-disc is non-Cartesian; just take any fully-sampled in the
             # folder (custom preferred, else the Siemens SE) for comparison.
             dat_dir = str(Path(j["dat_path"]).parent)
-            ref = fs_map.get(dat_dir) or siemens_se_map.get(dat_dir)
+            ref = _custom_ref(dat_dir, j["dat_path"]) or siemens_se_map.get(dat_dir)
             if ref:
                 j["reference_dat_path"] = ref
     return jobs
