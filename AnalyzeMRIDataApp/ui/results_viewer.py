@@ -314,6 +314,18 @@ class ReconTab(QWidget):
         )
         self._combo_ref_orient.activated.connect(self._on_ref_orient_changed)
 
+        # Shown only when the reference is a different acquisition (metrics withheld).
+        self._btn_score_anyway = QPushButton("Score anyway")
+        self._btn_score_anyway.setCheckable(True)
+        self._btn_score_anyway.setChecked(bool(self._result.get("_score_anyway")))
+        self._btn_score_anyway.setToolTip(
+            "The reference is a different acquisition (sequence, TE/TR, slice, FOV\n"
+            "or image grid differ), so SSIM/NMSE/PSNR were withheld. Tick to\n"
+            "compute them anyway — they are then labelled as NOT a valid\n"
+            "comparison, on screen and in the PDF."
+        )
+        self._btn_score_anyway.clicked.connect(self._toggle_score_anyway)
+
         # Export button
         btn_export = QPushButton("Export PNG…")
         btn_export.clicked.connect(self._export_png)
@@ -395,6 +407,7 @@ class ReconTab(QWidget):
         ctrl_row.addSpacing(12)
         ctrl_row.addWidget(self._lbl_ref_orient)
         ctrl_row.addWidget(self._combo_ref_orient)
+        ctrl_row.addWidget(self._btn_score_anyway)
         ctrl_row.addSpacing(12)
         ctrl_row.addWidget(btn_rotate)
         ctrl_row.addWidget(btn_export)
@@ -425,6 +438,8 @@ class ReconTab(QWidget):
         self._combo_ref_orient.setVisible(_orient_ok)
         if _orient_ok:
             self._sync_ref_orient_combo()
+        self._btn_score_anyway.setVisible(_orient_ok and bool(
+            self._result.get("reference_blocked_reason") or self._result.get("_score_anyway")))
 
     # ─── Drawing ─────────────────────────────────────────────────────────────
 
@@ -496,6 +511,15 @@ class ReconTab(QWidget):
             note += "\n⚠ close call — check visually"
         return note
 
+    def _metrics_blocked(self) -> bool:
+        """The reference is a different acquisition and 'Score anyway' is off."""
+        return (bool(self._result.get("reference_blocked_reason"))
+                and not self._result.get("_score_anyway"))
+
+    def _toggle_score_anyway(self) -> None:
+        self._result["_score_anyway"] = self._btn_score_anyway.isChecked()
+        self._on_ref_orient_changed()
+
     def _on_ref_orient_changed(self, _index=None) -> None:
         """Re-orient the reference (auto or forced), re-score, and redraw."""
         if self._eq_base is None:
@@ -510,6 +534,10 @@ class ReconTab(QWidget):
                 recon_name=r.get("recon_name", ""),
                 reference_name=r.get("reference_name", ""),
                 orientation=orient,
+                recon_dat_path=r.get("dat_path"),
+                reference_dat_path=r.get("reference_dat_path"),
+                slice_idx=r.get("reference_slice_idx"),
+                score_anyway=bool(r.get("_score_anyway")),
             )
         except Exception as exc:
             QMessageBox.warning(self, "Reference orientation",
@@ -518,6 +546,7 @@ class ReconTab(QWidget):
         for key in ("reference_image", "reference_orientation",
                     "reference_orientation_auto",
                     "reference_orientation_ambiguous", "reference_warning",
+                    "reference_blocked_reason",
                     "ssim", "nmse", "psnr", "rmse"):
             r[key] = cmp[key]
         self._eq_base["ref"] = np.asarray(cmp["reference_image"]).copy()
@@ -651,6 +680,9 @@ class ReconTab(QWidget):
             if r.get("psnr") is not None:
                 lines.append(f"PSNR = {r['psnr']:.2f} dB")
             txt = "\n".join(lines) or "no metrics"
+            if self._metrics_blocked():
+                txt = ("Metrics withheld:\nthe reference is a different\n"
+                       "acquisition (see the log).\n'Score anyway' overrides.")
 
             # ROI (anatomy-mask) metrics, when the Masked-Metrics toggle is on.
             if r.get("_mask") is not None:
@@ -672,7 +704,7 @@ class ReconTab(QWidget):
             _onote = self._ref_orient_note()
             if _onote:
                 txt += f"\n\n{_onote}"
-            if r.get("reference_warning"):
+            if r.get("reference_warning") and not self._metrics_blocked():
                 txt += "\n\n⚠ reference mismatch:\nmetrics reflect sequence/\nFOV differences too."
             axes[1, 2].text(0.5, 0.5, txt, ha="center", va="center",
                             transform=axes[1, 2].transAxes, fontsize=9)
@@ -876,6 +908,13 @@ class ReconTab(QWidget):
             self._axes_images.append((axes[1, 1], im5, kg, False))
 
         axes[1, 2].axis("off")
+        if rmse is None and self._metrics_blocked():
+            axes[1, 2].text(
+                0.1, 0.6,
+                "Metrics withheld\n\nThe reference is a different\nacquisition. "
+                "'Score anyway'\noverrides (labelled not valid).",
+                transform=axes[1, 2].transAxes, fontsize=10, va="center",
+            )
         if rmse is not None:
             metric_text = f"Metrics (whole image)\n\nRMSE : {rmse:.4f}\nPSNR : {psnr:.2f} dB"
             if ssim is not None:
@@ -981,7 +1020,7 @@ class ReconTab(QWidget):
             return
         recon = self._eq_base["recon"]
         ref   = self._eq_base["ref"]
-        if self._eq_masked_on:
+        if self._eq_masked_on and not self._metrics_blocked():
             thr = float(self._spin_thr.value())
             dil = int(self._spin_dil.value())
             try:
@@ -1030,7 +1069,8 @@ class ReconTab(QWidget):
         if self._eq_crop_on:
             recon, ref = self._crop_bbox(recon, ref)
 
-        rmse, psnr, ssim = self._calc_metrics(recon, ref)
+        blocked = self._metrics_blocked()
+        rmse, psnr, ssim = (None, None, None) if blocked else self._calc_metrics(recon, ref)
 
         self._result["grappa_image"]    = recon
         self._result["reference_image"] = ref
@@ -1041,7 +1081,7 @@ class ReconTab(QWidget):
         self._result["rmse"], self._result["psnr"], self._result["ssim"] = rmse, psnr, ssim
 
         # Masked metrics (anatomy region only), computed on the current recon/ref.
-        if self._eq_masked_on:
+        if self._eq_masked_on and not blocked:
             thr = float(self._spin_thr.value())
             dil = int(self._spin_dil.value())
             try:

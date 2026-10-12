@@ -368,6 +368,72 @@ def result_extras(asm: Optional[Assembled]) -> Dict[str, Any]:
     }
 
 
+def protocol_signature(dat_path: str, slice_idx: Optional[int] = None) -> Optional[Dict[str, Any]]:
+    """
+    What makes two Siemens acquisitions comparable, read from the header:
+    sequence program, TE(s)/TR, slice position/orientation/thickness and FOV.
+    None for Pulseq (placeholder protocol) and unreadable files — those cannot
+    be judged from the header.
+    """
+    from .utils import read_twix_header, sequence_family
+    if sequence_family(dat_path) != "siemens":
+        return None
+    hdr = read_twix_header(dat_path) or {}
+    yaps = hdr.get("MeasYaps", {}) or {}
+    try:
+        slices = yaps["sSliceArray"]["asSlice"]
+        sl = slices[slice_idx if slice_idx is not None and slice_idx < len(slices) else 0]
+    except (KeyError, IndexError, TypeError):
+        return None
+
+    def vec(d):   # twixtools omits zero components
+        d = d or {}
+        return tuple(float(d.get(k, 0.0)) for k in ("dSag", "dCor", "dTra"))
+
+    n_te = int(yaps.get("lContrasts", 1) or 1)
+    return {
+        "sequence": str(hdr.get("Config", {}).get("SequenceFileName", "")).split("\\")[-1],
+        "te_ms": tuple(t / 1000.0 for t in (yaps.get("alTE") or [])[:n_te]),
+        "tr_ms": float((yaps.get("alTR") or [0])[0]) / 1000.0,
+        "position_mm": vec(sl.get("sPosition")),
+        "normal": vec(sl.get("sNormal")),
+        "thickness_mm": float(sl.get("dThickness", 0.0)),
+        "fov_mm": (float(sl.get("dReadoutFOV", 0.0)), float(sl.get("dPhaseFOV", 0.0))),
+    }
+
+
+def acquisition_mismatch(recon_dat: str, reference_dat: str,
+                         slice_idx: Optional[int] = None) -> Optional[List[str]]:
+    """
+    Reasons the reference is a different acquisition than the recon ([] when
+    they match), or None when either header cannot be trusted (Pulseq,
+    unreadable) — then the caller cannot judge from the header.
+    """
+    a = protocol_signature(recon_dat, slice_idx)
+    b = protocol_signature(reference_dat, slice_idx)
+    if a is None or b is None:
+        return None
+    issues = []
+    if a["sequence"] != b["sequence"]:
+        issues.append(f"different sequence ({a['sequence']} vs {b['sequence']})")
+    if (len(a["te_ms"]) != len(b["te_ms"])
+            or not np.allclose(a["te_ms"], b["te_ms"], rtol=0.01, atol=0.05)):
+        issues.append(f"different TE ({_fmt(a['te_ms'])} vs {_fmt(b['te_ms'])} ms)")
+    if not np.isclose(a["tr_ms"], b["tr_ms"], rtol=0.01, atol=0.05):
+        issues.append(f"different TR ({a['tr_ms']:g} vs {b['tr_ms']:g} ms)")
+    if (not np.allclose(a["position_mm"], b["position_mm"], atol=0.5)
+            or not np.allclose(a["normal"], b["normal"], atol=1e-3)
+            or not np.isclose(a["thickness_mm"], b["thickness_mm"], atol=0.05)):
+        issues.append("different slice position/orientation/thickness")
+    if not np.allclose(a["fov_mm"], b["fov_mm"], atol=0.5):
+        issues.append(f"different FOV ({_fmt(a['fov_mm'])} vs {_fmt(b['fov_mm'])} mm)")
+    return issues
+
+
+def _fmt(values) -> str:
+    return "/".join(f"{v:g}" for v in values)
+
+
 def _header_float(hdr: dict, *paths: Tuple[str, str]) -> Optional[float]:
     for section, key in paths:
         try:

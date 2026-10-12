@@ -897,6 +897,9 @@ def reconstruct_equispaced(
             recon_name=Path(dat_path).name,
             reference_name=Path(reference_dat_path).name,
             log=log,
+            recon_dat_path=str(dat_path),
+            reference_dat_path=str(reference_dat_path),
+            slice_idx=_refscan_sl,
         )
         reference_image   = _cmp["reference_image"]
         rmse, psnr, ssim  = _cmp["rmse"], _cmp["psnr"], _cmp["ssim"]
@@ -904,7 +907,9 @@ def reconstruct_equispaced(
         _ref_orient_keys = {k: _cmp[k] for k in (
             "reference_image_raw", "reference_orientation",
             "reference_orientation_auto", "reference_orientation_ambiguous",
-            "recon_name", "reference_name")}
+            "recon_name", "reference_name", "reference_blocked_reason", "nmse")}
+        _ref_orient_keys["reference_dat_path"] = str(reference_dat_path)
+        _ref_orient_keys["reference_slice_idx"] = _refscan_sl
 
     from .constants import method_label as _mlabel
     log(f"{_mlabel(method)} reconstruction complete.")

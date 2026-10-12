@@ -343,7 +343,7 @@ def reconstruct_retro(
     # ── 6. Optional reconstruction ────────────────────────────────────────────
     recon_image = None
     recon_kspace_rss = None   # only set when GRAPPA produces a reconstructed k-space
-    rmse = psnr = ssim = None
+    rmse = psnr = ssim = nmse = None
     # Initialised here (not inside the if-block): the return dict references
     # sens_maps_out unconditionally, including on the recon_method == "none" path.
     recon_kspace  = None
@@ -524,7 +524,7 @@ def reconstruct_retro(
         recon_image = (_rec * (_f95 / _r95)).astype(np.float32)
         m = metrics_vs_reference(recon_image, fully_sampled_image, with_diff=True)
         diff_image = m["diff"]
-        rmse, psnr, ssim = m["rmse"], m["psnr"], m["ssim"]
+        rmse, psnr, ssim, nmse = m["rmse"], m["psnr"], m["ssim"], m["nmse"]
         _ssim_txt = f"{ssim:.4f}" if ssim is not None else "n/a"
         log(f"  RMSE={rmse:.4f}  PSNR={psnr:.2f} dB  SSIM={_ssim_txt}")
 
@@ -550,6 +550,7 @@ def reconstruct_retro(
         "rmse":                     rmse,
         "psnr":                     psnr,
         "ssim":                     ssim,
+        "nmse":                     nmse,
         "method":                   recon_method,
         "params": {
             "mask_type":        mask_type,

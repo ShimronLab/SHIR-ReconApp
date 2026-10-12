@@ -135,11 +135,15 @@ def reconstruct_poisson(
             r_scale = np.percentile(rec.ravel(), 95) + 1e-12
             f_scale = float(np.percentile(np.abs(ref_img).ravel(), 95)) + 1e-12
             rec = rec * (f_scale / r_scale)
-            return compare_to_reference(
+            extra = compare_to_reference(
                 rec, ref_img,
                 recon_name=Path(dat_path).name,
                 reference_name=Path(reference_dat_path).name, log=log,
+                recon_dat_path=str(dat_path), reference_dat_path=str(reference_dat_path),
             )
+            extra["reference_dat_path"] = str(reference_dat_path)
+            extra["reference_slice_idx"] = None
+            return extra
         except Exception as exc:
             log(f"  [WARN] reference comparison failed ({exc}).")
             return {}

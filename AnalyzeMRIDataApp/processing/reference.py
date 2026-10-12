@@ -201,6 +201,10 @@ def compare_to_reference(
     reference_name: str,
     orientation: str = "auto",
     log: Optional[Callable[[str], None]] = None,
+    recon_dat_path: Optional[str] = None,
+    reference_dat_path: Optional[str] = None,
+    slice_idx: Optional[int] = None,
+    score_anyway: bool = False,
 ) -> Dict[str, Any]:
     """
     Compare a recon image to a fully-sampled reference.
@@ -214,10 +218,15 @@ def compare_to_reference(
     can re-run this without re-reading), the applied ``reference_orientation`` /
     ``reference_orientation_auto``, the metrics and an optional
     ``reference_warning``.
+
+    Comparability gate: when both files are Siemens acquisitions (their
+    headers can be trusted) and differ in sequence, TE/TR, slice, FOV or final
+    image grid, the metrics are withheld (None) and ``reference_blocked_reason``
+    says why — unless ``score_anyway`` is set, which scores and labels the
+    result as not comparable. Pulseq / unreadable headers cannot be judged and
+    keep the filename-based warning.
     """
     log = log or _noop
-
-    from .imaging import metrics_vs_reference
 
     recon = np.abs(np.squeeze(recon_image)).astype(float)
     ref_raw = np.abs(np.squeeze(reference_image)).astype(np.float32)
@@ -241,6 +250,39 @@ def compare_to_reference(
     ref = orient_image(ref_raw, orientation).astype(float)
     ref_orig_shape = ref.shape
 
+    common = {
+        "reference_image_raw":        ref_raw,
+        "reference_orientation":      orientation,
+        "reference_orientation_auto": is_auto,
+        "reference_orientation_ambiguous": ambiguous,
+        "recon_name":        recon_name,
+        "reference_name":    reference_name,
+        "reference_blocked_reason": None,
+    }
+
+    # ── Comparability gate (Siemens headers can be trusted) ──────────────────
+    issues = None
+    if recon_dat_path and reference_dat_path:
+        from .acquisition import acquisition_mismatch
+        issues = acquisition_mismatch(recon_dat_path, reference_dat_path, slice_idx)
+    if issues is not None:
+        if ref_orig_shape != recon.shape:
+            issues.append(f"different image grid ({recon.shape[0]}×{recon.shape[1]} vs "
+                          f"{ref_orig_shape[0]}×{ref_orig_shape[1]})")
+        if issues and not score_anyway:
+            reason = ("Reference is a different acquisition: " + "; ".join(issues)
+                      + ". Metrics withheld — use a fully-sampled scan of the same "
+                      "protocol, or choose 'Score anyway'.")
+            log(f"  METRICS WITHHELD: {reason}")
+            return {**common, "reference_image": _resize_to(ref, recon.shape),
+                    "ssim": None, "nmse": None, "psnr": None, "rmse": None,
+                    "reference_warning": reason, "reference_blocked_reason": reason}
+        warning = None
+        if issues:
+            warning = ("Scored anyway — NOT a valid comparison: " + "; ".join(issues) + ".")
+            log(f"  WARNING: {warning}")
+        return _score(recon, ref, common, warning, log)
+
     recon_seq, ref_seq = _seq_kind(recon_name), _seq_kind(reference_name)
     seq_mismatch = bool(recon_seq and ref_seq and recon_seq != ref_seq)
     shape_mismatch = ref_orig_shape != recon.shape
@@ -262,6 +304,14 @@ def compare_to_reference(
         )
         log(f"  WARNING: {warning}")
 
+    return _score(recon, ref, common, warning, log)
+
+
+def _score(recon: np.ndarray, ref: np.ndarray, common: Dict[str, Any],
+           warning: Optional[str], log: Callable[[str], None]) -> Dict[str, Any]:
+    """Resize the reference to the recon, match scales and compute the metrics."""
+    from .imaging import metrics_vs_reference
+
     ref = _resize_to(ref, recon.shape)
 
     # Match intensity scales: a coil-combined (BART PICS / SENSE) recon and the
@@ -277,13 +327,8 @@ def compare_to_reference(
     log(f"  RMSE={m['rmse']:.4f}  NMSE={m['nmse']:.4f}  "
         f"PSNR={m['psnr']:.2f} dB  SSIM={_ssim_txt}")
     return {
+        **common,
         "reference_image":   ref,
-        "reference_image_raw":        ref_raw,
-        "reference_orientation":      orientation,
-        "reference_orientation_auto": is_auto,
-        "reference_orientation_ambiguous": ambiguous,
-        "recon_name":        recon_name,
-        "reference_name":    reference_name,
         "ssim":              m["ssim"],
         "nmse":              m["nmse"],
         "psnr":              m["psnr"],
