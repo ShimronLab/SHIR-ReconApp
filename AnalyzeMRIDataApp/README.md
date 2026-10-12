@@ -77,7 +77,9 @@ pip install -r requirements.txt
 ```
 
 Key packages: `PyQt5`, `numpy`, `scipy`, `matplotlib`, `sigpy`, `pygrappa`,
-`twixtools`, `scikit-image` (`numba` comes in via sigpy).  
+`twixtools`, `scikit-image` (`numba` comes in via sigpy), and `pypulseq` (reads the played
+Pulseq `.seq`; optional at runtime — imported lazily). Install pypulseq with
+`pip install --no-deps pypulseq==1.5.0.post1` if pip tries to change the pinned numpy/scipy.  
 See [requirements.txt](requirements.txt) for pinned versions and
 [requirements-dev.txt](requirements-dev.txt) for the test/build tools.
 
@@ -133,6 +135,11 @@ The app auto-detects each `.dat` file type from the filename stem:
 | PoissonDisc | `*poisson*` | Red/pink |
 | Unknown | anything else | Grey — reconstructed with the **generic fallback** (below) |
 
+Siemens **product** scans keep their scanner names (`meas_MID…_t1_se_cor.dat`), so they show
+up as *Unknown*. Their geometry does not depend on the name — it is read from the file (see
+[How SHIR reads a scan](#how-shir-reads-a-scan)). A fully-sampled product scan reconstructs
+directly; for a GRAPPA (PAT) scan, right-click → **Reconstruct as ▸ Equispaced**.
+
 ### 2. Select files to process
 - Check/uncheck folders, scan types, or individual files in the tree; each **Band** file
   (`band_se_0` … `band_se_15`) is its own checkable tree item.
@@ -181,6 +188,21 @@ Each completed reconstruction appears as a new **tab** in the results viewer:
 - **matplotlib toolbar** — zoom, pan, save individual figures.
 - **All Coils** button — open a grid of all per-coil images for the active tab.
 
+For scans whose geometry is read from the file (Siemens product scans):
+- **Facts line** under the controls — a one-line summary, e.g.
+  `PF 7/8 · 235/269 lines · R 1 · phase OS 0% · readout OS 2× · prewhitened`.
+- **Acquisition…** — the full table of acquisition facts, each with the **source** it came
+  from (header, per-readout tag, noise scan, data, derived, setting); doubtful values are flagged.
+- **Sampling strip** — a thin coloured bar *beside* the k-space (never drawn over it): blue
+  acquired, green calibration, grey skipped by acceleration, orange never acquired (partial
+  Fourier).
+- **Show filled k-space** — switch the k-space panel between what was acquired and what the
+  reconstruction filled in.
+- **Physical aspect** — images are drawn with the true pixel spacing (e.g. 0.42 × 0.60 mm),
+  not stretched to a square.
+- **Score anyway** — appears when the reference is not comparable (see
+  [Reference comparability](#reference-comparability)); scores computed this way are labelled.
+
 ### 6. Save output
 In the **Output** group (right panel), tick **Generate PDF report** and/or **Save combined
 images (.npy)**, then click **💾 Save output**. A **Save As** dialog opens **per scan
@@ -199,6 +221,71 @@ including toggling `.npy` on *after* the run has finished.
 ---
 
 ## Reconstruction Pipelines
+
+### How SHIR reads a scan
+
+Every Cartesian pipeline (Fully-Sampled, Equispaced, Simulator, generic CS, reference loading)
+starts from the same step, `processing/acquisition.py` → `acquire_cartesian()`. What it trusts
+depends on the **sequence family**, read from `Config.SequenceFileName` in the TWIX header:
+
+| Family | Geometry comes from | Notes |
+|---|---|---|
+| **Siemens product** | the protocol header + each readout's own tags | Line numbers, k-space centre line/column, partial Fourier, readout and phase oversampling, PAT reference lines, FOV and pixel spacing. Nothing is guessed from the filename. |
+| **Pulseq** | the legacy path (filename, line count, `tse_reorder`, trajectory JSONs) | Pulseq headers carry placeholder protocol values (matrix 128, OS 1, "3D"), so they are **not** used. The played `.seq` is cross-checked in shadow mode (below). |
+| Unreadable header | the legacy path | |
+
+For product scans the k-space is placed on its **full phase-encode grid** (`lPhaseEncodingLines`,
+centred on `CenterLin`) — lines the protocol never acquired stay zero and are labelled:
+
+- **Partial Fourier** — missing lines are filled by the *Partial-Fourier lines* setting:
+  **Zero-fill** (default), **Homodyne** or **POCS**. GRAPPA fills only the accelerated gaps;
+  SENSE/CS treat the partial-Fourier lines as unsampled. The ESPIRiT calibration region is
+  limited to the symmetric centre.
+- **Asymmetric echo** — the readout is zero-padded symmetric about `CenterCol`.
+- **Oversampling** — readout oversampling (`flReadoutOSFactor`) is cropped in the image domain;
+  phase oversampling (`flPhaseOS`) is cropped last, after reconstruction and before metrics.
+- **Integrated PAT reference lines** (`ucRefScanMode` 2) are merged and used as GRAPPA/ESPIRiT
+  calibration. *Separate* reference scans (mode 4) still use the legacy path.
+- **Noise prewhitening** — the noise-adjust scan stored in the file is used to decorrelate the
+  coils before any coil processing (on by default; Siemens only).
+
+SHIR **refuses rather than guesses** when a product file is outside what it handles:
+
+| Message | Cause |
+|---|---|
+| `3-D acquisitions are not supported yet.` | `ucDimension` = 3D |
+| `Unsupported data dimensions [...]` | multi-echo, repetitions, sets, averages … |
+| `Readouts disagree on CenterLin / CenterCol / ncol` | the file contradicts itself |
+| `Line numbers … do not fit the N-line grid` | line counters outside the protocol grid |
+| `This accelerated scan has no calibration (reference) lines …` | PAT scan without reference lines (Equispaced) |
+
+`python tools/acq_report.py <folder>` prints the fact sheet of every `.dat` under a folder.
+
+#### Pulseq: the played `.seq`
+
+A Pulseq header still names the `.seq` that was played (`Meas.tFree`) and its signature
+(`Dicom.tSequenceVariant` = the `[SIGNATURE] Hash` line of the `.seq`). `processing/seq_geometry.py`
+finds that **exact** file by signature — a same-name file with a different hash (regenerated
+after the scan) is never used. Searched, in order:
+
+1. the `.dat` folder and its parent;
+2. `seq_files/` or any `*_seq/` folder in the `.dat` folder, its parent or grandparent;
+3. a library folder (`seq_geometry.set_library_dir`).
+
+With `pypulseq` installed, the `.seq` gives every readout's phase-encode index, the readout
+oversampling and the FOV. **This is shadow mode:** the legacy line placement is still used, and
+a `[SEQ]` log line reports whether it matches the `.seq` (`matches the played .seq exactly`,
+`REVERSED phase-encode direction`, `same lines, different ORDER`, …). Without the `.seq`, or
+without pypulseq, the scan reconstructs exactly as before. `python tools/seq_parity.py` runs
+this comparison over every Pulseq scan.
+
+### Reference comparability
+
+Before a fully-sampled reference is scored against a reconstruction, two Siemens product
+files are compared: sequence program, TE, TR, slice position/orientation/thickness and FOV.
+If they differ, SSIM/NMSE/PSNR are **withheld** and the tab (and the PDF) states why, e.g.
+`different TE (12 vs 96 ms)`. **Score anyway** computes them regardless, marked *not
+comparable*. Pulseq pairs (placeholder headers) keep the filename-based warning only.
 
 ### Reconstruction engine (BART / sigpy)
 
@@ -337,6 +424,8 @@ Outputs (per result tab — 3 × 3 grid):
 | Common | Traj margin (px) | 1.0 | Band, Poisson | Margin subtracted from N/2 when scaling trajectory |
 | Common | ESPIRiT calib width | 24 | Band, Poisson, FullySamp (SENSE), Simulator (SENSE) | Calibration region width for ESPIRiT sensitivity maps |
 | Common | **Recon engine** | Auto | all BART/sigpy methods | Auto (BART if available, else sigpy) / Force BART / Force sigpy |
+| Siemens scans | Partial-Fourier lines | Zero-fill | all Cartesian (Siemens product) | Zero-fill / Homodyne / POCS for lines a partial-Fourier protocol never acquired. No effect on Pulseq scans |
+| Siemens scans | Noise prewhitening | On | all Cartesian (Siemens product) | Decorrelate coils with the file's noise-adjust scan before coil processing |
 | Fully Sampled | Combination mode | RSS | Fully-Sampled | RSS (fast) or ESPIRiT + SENSE coil combination |
 | Equispaced Recon | Method | GRAPPA | Equispaced | GRAPPA / GRAPPA+SENSE / Pure SENSE / CS-SENSE / ESPIRiT / ESPIRiT +L1 / +L2 / +TV / +L1-Wav |
 | Equispaced Recon | Mask method | analytical | Equispaced | Build PE mask analytically (R/ACS) or from the data's sampling pattern |
@@ -382,8 +471,15 @@ SE_1mm/                              ← parent scan folder
 ├── Bands.json                       ← rotated-band trajectories, keyed by index
 │                                       ("0", "1", … — typically 16, but any count)
 ├── PoissonDisc.json                 ← Poisson-disc 2D trajectory
-└── Undersampled4equispaced.json     ← <R>× equispaced + ACS PE mask (R matches the .dat)
+├── Undersampled4equispaced.json     ← <R>× equispaced + ACS PE mask (R matches the .dat)
+└── seq_files/                       ← optional: the Pulseq .seq files that were played
+    └── *.seq                           (matched by signature, so names may differ)
 ```
+
+Siemens **product** scans need none of the JSONs or naming conventions — a folder of
+`meas_MID….dat` files is enough. For Pulseq scans, keep the exact `.seq` of every scan
+(the generator script can overwrite it with a new signature later); see
+[Pulseq: the played `.seq`](#pulseq-the-played-seq).
 
 `utils.auto_detect_scan_type(filename)` uses regex matching on the filename stem to determine scan
 type; `utils.extract_band_index(filename)` parses the trailing integer for band files.
@@ -421,10 +517,21 @@ AnalyzeMRIDataApp/
 │   ├── generic_recon.py       ← reconstruct_generic()      — UNKNOWN-scan fallback
 │   │                             (Cartesian RSS / NUFFT JSON / radial / CS pattern)
 │   ├── reference.py           ← load_reference_rss / compare_to_reference
-│   │                             (shared fully-sampled comparison: Equispaced + Poisson)
+│   │                             (shared fully-sampled comparison + comparability gate)
+│   ├── acquisition.py         ← acquire_cartesian(): header/per-readout geometry for
+│   │                             Siemens scans → full-grid k-space, line categories,
+│   │                             facts with sources; prewhitening; finalize_image()
+│   ├── partial_fourier.py     ← pf_fill(): zero-fill / homodyne / POCS
+│   ├── seq_geometry.py        ← played-.seq lookup by signature + pypulseq line
+│   │                             geometry (shadow-mode cross-check for Pulseq scans)
+│   ├── tse_reorder.py         ← Pulseq TSE echo-train un-scrambling
 │   └── retro_undersample.py   ← reconstruct_retro()        — retrospective simulator
 │                                   build_equispaced_mask()  — port of MATLAB function
 │                                   build_vd_mask()          — port of MATLAB function
+├── tools/                     ← developer scripts (not shipped in the app)
+│   ├── golden.py              ← capture / compare real-scan outputs (regression net)
+│   ├── seq_parity.py          ← legacy Pulseq geometry vs the played .seq, per scan
+│   └── acq_report.py          ← print the acquisition fact sheet of every .dat
 ├── resources.py               ← resource_path(): dev + frozen (PyInstaller) asset paths
 ├── version.py                 ← __version__ (title bar / About / build banner)
 ├── Graphics/                  ← Intro.png (splash) + logo.png (window / exe icon)
@@ -461,11 +568,27 @@ Markers (registered in [`pytest.ini`](pytest.ini)) gate the environment-specific
 | `bart` | BART on `PATH` | BART is absent |
 | `gui` | a Qt platform (pytest-qt) | runs offscreen; needs pytest-qt |
 | `realdata` | the local sample scan folder | the folder is not present |
+| `golden` | a captured baseline (`SHIR_GOLDEN_DIR`) | the variable is unset |
 
 ```bash
 pytest -m "not bart and not realdata"    # CI-friendly subset (no BART, no data)
 pytest -m realdata                        # end-to-end on real .dat scans
 ```
+
+**Golden regression (real scans).** [`tools/golden.py`](tools/golden.py) runs a manifest of real
+Pulseq scans through every pipeline and engine and stores the outputs, so a change can be
+checked against a known-good commit:
+
+```bash
+python tools/golden.py capture --app-root <clean repo checkout> --out ~/shir_golden/<rev>
+python tools/golden.py compare --app-root .. --baseline ~/shir_golden/<rev> [--fast]
+SHIR_GOLDEN_DIR=~/shir_golden/<rev> pytest -m golden     # SHIR_GOLDEN_FULL=1 for all cases
+```
+
+`--app-root` is the repository root (the folder holding `AnalyzeMRIDataApp/` and
+`read_siemens_scans/`). Each case reports `PASS` (bit-identical), `PASS~` (within tolerance), `SAME-ERROR` or `FAIL`;
+any Pulseq `FAIL` exits non-zero. Siemens product cases are reported as `CHANGED`, since the
+header-driven geometry is meant to change them.
 
 Tests run headless (`QT_QPA_PLATFORM=offscreen`, matplotlib `Agg`); Qt settings are
 redirected to a temp dir so they never touch your real preferences. The synthetic
@@ -483,6 +606,19 @@ TWIX reader, so no scanner data is required for the bulk of the suite.
   **`MRI_BART_BIN`** environment variable (honoured on every platform; on Windows it names the
   binary *inside* WSL). The standalone builds exclude **torch**, so the torch-based **gGRAPPA**
   simulator method is unavailable there.
+- **Siemens product scans:** 2-D Cartesian, single echo, one repetition. 3-D, multi-echo,
+  repetitions/sets and self-contradicting files are refused with a message (see
+  [How SHIR reads a scan](#how-shir-reads-a-scan)). Scans with a *separate* PAT reference
+  scan still use the legacy geometry. Expect differences from the scanner's own DICOM images:
+  the scanner also applies filters, 2-D distortion correction, prescan normalise and
+  interpolation, which SHIR does not.
+- **Pulseq scans** keep the legacy geometry (filename + line count + trajectory JSON); the
+  played `.seq` is only cross-checked. The cross-check currently reports a **reversed
+  phase-encode direction** for `swapPE` scans (mirrored image, one-line shift) — reference
+  auto-orientation compensates in the metrics.
+- **ESPIRiT thresholds differ between engines:** BART `ecalib` uses `-t 0.001`, sigpy
+  `EspiritCalib` uses `thresh 0.02` (each library's default, now passed explicitly). This is one
+  source of the small BART/sigpy differences.
 - **TSE folders** (`TSE_1mm`, `TSE_3mm`) contain Band data only; Fully-Sampled, Equispaced and
   Poisson-Disc scan types will not appear for these folders.
 - Intermediate BART `.cfl` / `.hdr` files are written to a **temporary directory** and deleted
@@ -517,6 +653,10 @@ To share the app with other groups:
    user guide ([`Compile/instructions.md`](Compile/instructions.md)).
 3. Tag the version (`version.py` → shown in the title bar / About dialog) and
    attach the zip to a **GitHub Release**.
+4. **Demo data** goes on the same Release as a separate zip asset (up to 2 GB per file), not
+   into the repository: a single TWIX file is typically 200–300 MB, over GitHub's 100 MB
+   per-file limit, and `*.dat` is git-ignored. Include the protocol PDF, and the `.seq` files for
+   Pulseq scans, and link the asset from this README.
 
 Further options worth considering for wider distribution (not yet set up):
 

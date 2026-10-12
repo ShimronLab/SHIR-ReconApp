@@ -77,34 +77,43 @@ parent of `dat_files/`), not inside `dat_files/`.
 
 Scans acquired with the scanner's **own** product sequences (spin-echo `t1_se_tra`,
 GRAPPA-accelerated gradient-echo `t1_fl2d_tra`, …) instead of the custom Pulseq
-sequences follow the same type keywords. Two things are worth understanding —
-what the filename controls, and what the app figures out from the data itself.
+sequences are read **from the file itself**: the app recognises a product scan
+from its header and takes the matrix, k-space centre, partial Fourier,
+oversampling, acceleration, calibration lines, FOV and pixel size from the
+protocol and from each readout's own line number. Nothing about the geometry
+comes from the filename, and no trajectory JSON is needed.
 
-**What the filename controls:**
+**What the filename still controls:**
 
-- **The type keyword decides the pipeline:** the name must contain
-  `fully_sampled` (→ Fully-Sampled) or `equispaced` (→ Equispaced) — the raw
-  scanner export (`..._t1_fl2d_tra_with_4.dat`) contains neither, so **rename it**
-  to add the keyword (and `_R<n>_acs<n>`), or right-click → **Reconstruct as**.
-- **The `Siemens_` prefix** (a filename starting with `Siemens`) tells the
-  **Equispaced** recon to (a) **ignore any custom trajectory JSON** — the product
-  sequence didn't use one — and (b) always **prompt for the PE-mask method**
-  (analytical vs. `bart pattern`). It also biases reference matching toward the
-  spin-echo scan (see [§4c](#4c-how-the-reference-is-chosen-undersampled-scans)).
-  It is otherwise optional.
+- **The type keyword picks the pipeline:** a name containing `fully_sampled`
+  (→ Fully-Sampled) or `equispaced` (→ Equispaced). The raw scanner export
+  (`meas_MID…_t1_fl2d_tra.dat`) contains neither and is listed as *Unknown*:
+  a fully-sampled scan reconstructs fine that way; for a GRAPPA scan,
+  right-click → **Reconstruct as → Equispaced** (or rename it). The `_R<n>`
+  in the name is not needed — the acceleration is measured from the data.
+- **Automatic reference matching** (see [§4c](#4c-how-the-reference-is-chosen-undersampled-scans))
+  still looks at names; you can always set the reference yourself.
 
-**What the app detects from the data (not from the name):**
+**What happens to lines the scanner did not acquire:**
 
-- **Multi-slice** is recognised from the **array shape** (a 4-D TWIX array = many
-  slices), so a multi-slice Siemens scan prompts you for a slice index regardless
-  of its name.
-- **The separate GRAPPA ACS block:** native GRAPPA stores its calibration lines
-  in a separate `refscan` measurement, not in the image data. The Equispaced
-  recon **detects this by finding the ACS region empty** in the image k-space and
-  then pulls the `refscan` ACS in automatically — again independent of the name
-  (custom sequences fill their ACS lines, so they never trigger it).
+- **Partial Fourier** (e.g. 7/8): the missing edge of k-space is filled
+  according to *Partial-Fourier lines* — **Zero-fill** (default), **Homodyne**
+  or **POCS** — and shown in orange on the sampling strip.
+- **GRAPPA calibration lines** acquired inside the image scan are merged and used
+  for calibration. Scans whose calibration is a *separate* reference scan use the
+  older name-based path (the log says so).
+- **Noise prewhitening** uses the noise measurement stored in the file (on by
+  default).
 
-Recommended names (keep the pair in the **same** `dat_files/` folder):
+The app **stops with a message instead of guessing** when a product file is
+3-D, multi-echo, has repetitions, contradicts itself, or is accelerated without
+any calibration lines.
+
+**Multi-slice** is recognised from the data, so a multi-slice Siemens scan
+prompts for a slice (or use **Select slices…**) regardless of its name.
+
+Recommended names — optional, they only help the pipeline choice and automatic
+reference matching (keep the pair in the **same** `dat_files/` folder):
 
 ```
 subject_.../dat_files/
@@ -113,12 +122,14 @@ subject_.../dat_files/
 └── Siemens_meas_..._t1_fl2d_tra_equispaced_R4_acs24.dat    ← GRE GRAPPA, R4
 ```
 
-> **Note on the reference:** the fully-sampled Siemens reference is usually a
+> **Note on the reference:** the fully-sampled Siemens reference is often a
 > **spin-echo** (`t1_se`) while the accelerated scan is a **gradient-echo**
-> (`t1_fl2d`). The app still compares them but flags a *sequence mismatch* on the
-> result, because SSIM/PSNR then reflect SE-vs-GRE contrast differences, not just
-> the reconstruction error. For a clean metric, provide a fully-sampled scan of
-> the **same** sequence. See [§4c](#4c-how-the-reference-is-chosen-undersampled-scans).
+> (`t1_fl2d`). SSIM/PSNR between them would measure SE-vs-GRE contrast, not
+> reconstruction error, so for two Siemens product scans the app **withholds the
+> metrics** when the sequence, TE, TR, slice or FOV differ, and says why. The
+> **Score anyway** button in the result tab computes them regardless (marked *not
+> comparable*). For a clean metric, acquire a fully-sampled scan with the **same**
+> protocol. See [§4c](#4c-how-the-reference-is-chosen-undersampled-scans).
 
 ---
 
@@ -195,11 +206,16 @@ SSIM / NMSE / PSNR). By default the app finds the reference automatically,
    - **Poisson-disc** just takes the folder's fully-sampled scan (custom
      preferred, else the Siemens SE).
 3. If **no** reference is found, the recon still runs — just **without metrics**.
-4. The reference is RSS-combined and, if its matrix size differs, resized to
-   match. If the reference's **sequence** (SE / GRE / TSE) or **matrix size**
-   differs from the reconstructed scan, the result is tagged with a
-   **"reference mismatch"** warning: the metrics then also reflect
-   sequence/contrast/FOV differences, not reconstruction error alone.
+4. **Siemens product pairs:** the two headers are compared first (sequence, TE,
+   TR, slice position/orientation/thickness, FOV). If they differ, the metrics
+   are **withheld** and the tab and PDF show the reason; **Score anyway**
+   computes them regardless, marked *not comparable*.
+5. **Pulseq pairs** (their headers don't carry a usable protocol): the reference
+   is RSS-combined and, if its matrix size differs, resized to match. If the
+   reference's **sequence** (SE / GRE / TSE) or **matrix size** differs from the
+   reconstructed scan, the result is tagged with a **"reference mismatch"**
+   warning: the metrics then also reflect sequence/contrast/FOV differences, not
+   reconstruction error alone.
 
 **Choosing the reference yourself:** right-click an undersampled scan →
 **"Set reference"** and pick one of the fully-sampled scans listed (found across
@@ -300,6 +316,8 @@ either engine and always work. The log prints which engine ran for each job.
 | Common | Traj margin (px) | Band, Poisson | Keeps trajectory inside the grid |
 | Common | ESPIRiT calib width | all ESPIRiT/SENSE | Calibration region for sensitivity maps |
 | Common | **Recon engine** | all BART/sigpy methods | Auto / Force BART / Force sigpy |
+| Siemens scans | Partial-Fourier lines | Siemens product scans | Zero-fill (default) / Homodyne / POCS for lines a partial-Fourier protocol never acquired |
+| Siemens scans | Noise prewhitening | Siemens product scans | decorrelate coils with the file's noise scan (default on) |
 | Fully Sampled | Combination mode | Fully-Sampled | RSS or ESPIRiT + SENSE |
 | Equispaced | Method | Equispaced | GRAPPA … ESPIRiT ±L1/L2/TV |
 | Equispaced | Mask method | Equispaced | analytical or from-data pattern |
@@ -328,6 +346,22 @@ Each completed reconstruction is a **tab** in the center viewer:
 - **matplotlib toolbar** — zoom, pan, and save the current figure as PNG.
 - **All Coils** — open a grid of every per-coil image for the active tab.
 - **Clear Tabs** — remove all result tabs.
+
+For Siemens product scans the tab also shows:
+- a **facts line** under the controls, e.g.
+  `PF 7/8 · 235/269 lines · R 1 · phase OS 0% · readout OS 2× · prewhitened`;
+- **Acquisition…** — every acquisition fact the app read, and where it came from
+  (header, line counters, noise scan, data, or your settings);
+- a **sampling strip** beside the k-space: blue = acquired, green = calibration,
+  grey = skipped by acceleration, orange = never acquired (partial Fourier);
+- **Show filled k-space** — switch the k-space between what was acquired and
+  what the reconstruction filled in;
+- **Score anyway** — when the reference is not comparable (§4c).
+
+Images are drawn with their true pixel size, so a 0.42 × 0.60 mm scan is not
+stretched into a square. The PDF report adds the same facts under each page title
+and an **Acquisition** page with the facts, the reference verdict and the
+parameters the run actually used.
 
 Tab titles follow `‹folder› — ‹type›[ ‹detail›]`, e.g. `SE_1mm — Band 0`,
 `SE_1mm — Equispaced GRAPPA`, `SE_1mm — Retro Sim [equispaced R=4.0×]`.
@@ -367,7 +401,10 @@ k-spaces, and **RMSE/PSNR** vs the fully-sampled reference.
 
 ## 11. Tips & troubleshooting
 
-- **A file shows as "Unknown":** its name doesn't match the rules in [§2](#2-data-naming-format-read-this-first). It's still reconstructed with the generic fallback (Cartesian RSS by default). For a proper recon, rename it to contain `fully_sampled`, `equispaced`, `poisson`, or `band_se_N` / `band_tse_N`, or — for a non-Cartesian scan — add a `<scanname>.json` / `Trajectory.json` trajectory and pick a NUFFT mode in the **Unknown Scans** panel.
+- **A file shows as "Unknown":** its name doesn't match the rules in [§2](#2-data-naming-format-read-this-first). It's still reconstructed with the generic fallback (Cartesian RSS by default). For a Siemens product scan this is already a correct recon — the geometry comes from the file; for a GRAPPA product scan use right-click → **Reconstruct as → Equispaced**.
+- **"3-D acquisitions are not supported yet" / "Unsupported data dimensions" / "Readouts disagree on …":** the Siemens file is outside what the app reconstructs (3-D, multi-echo, repetitions) or contradicts itself; the app stops rather than produce a wrong image.
+- **Metrics show "not comparable":** the reference was acquired with a different protocol (§4c). Pick a matching reference via **Set reference**, or click **Score anyway**.
+- **Other unknown files (Pulseq / custom):** for a proper recon, rename the file to contain `fully_sampled`, `equispaced`, `poisson`, or `band_se_N` / `band_tse_N`, or — for a non-Cartesian scan — add a `<scanname>.json` / `Trajectory.json` trajectory and pick a NUFFT mode in the **Unknown Scans** panel.
 - **Band/Poisson do nothing:** the trajectory JSON is missing or misplaced — put `Bands.json` / `PoissonDisc.json` / `Undersampled<R>equispaced.json` in the scan-folder root.
 - **"could not launch BART" (only in Force BART):** switch the engine to **Auto** or **Force sigpy**, or install BART (see the demands docs).
 - **Recon seems slow:** you're likely on the sigpy engine (CPU) — install BART and use Auto/Force BART, or lower the iteration count.

@@ -29,6 +29,7 @@ from .utils import (
     crop_readout_oversampling,
     load_trajectory,
     scale_trajectory,
+    select_slice,
 )
 
 
@@ -61,6 +62,7 @@ def reconstruct_poisson(
     tse: Optional[bool] = None,
     reference_dat_path: Optional[str] = None,
     progress_cb: Optional[Callable[[str], None]] = None,
+    slice_selector_cb: Optional[Callable[[int], int]] = None,
 ) -> Dict[str, Any]:
     """
     Compressed-sensing reconstruction of Poisson-disc (Cartesian variable-density)
@@ -91,6 +93,9 @@ def reconstruct_poisson(
         Optional fully-sampled reference for SSIM/NMSE/PSNR + difference.
     progress_cb : callable(str), optional
         Status callback.
+    slice_selector_cb : callable(n_slices) -> int, optional
+        Picks the slice of a multi-slice scan (default: the middle slice); the
+        reference uses the same slice.
 
     ``grid_size`` / ``scan_fov_m`` / ``crop_size`` / ``traj_margin`` are accepted
     for signature compatibility with callers but are unused by the Cartesian path
@@ -124,7 +129,7 @@ def reconstruct_poisson(
             # against a matched SENSE-combined reference; zero-fill is RSS.
             _combine = "rss" if use_zerofill else "sense"
             ref_img = load_reference_rss(
-                reference_dat_path, combine=_combine, slice_idx=None, tse=tse,
+                reference_dat_path, combine=_combine, slice_idx=slice_idx, tse=tse,
                 calib_width=calib_width, log=log
             )
             # The recon and the IFFT+RSS reference can sit on different intensity
@@ -142,7 +147,7 @@ def reconstruct_poisson(
                 recon_dat_path=str(dat_path), reference_dat_path=str(reference_dat_path),
             )
             extra["reference_dat_path"] = str(reference_dat_path)
-            extra["reference_slice_idx"] = None
+            extra["reference_slice_idx"] = slice_idx
             return extra
         except Exception as exc:
             log(f"  [WARN] reference comparison failed ({exc}).")
@@ -154,10 +159,8 @@ def reconstruct_poisson(
     # ── 1. Read raw k-space ──────────────────────────────────────────────────
     log(f"Reading TWIX data: {Path(dat_path).name}")
     kspace_orig, _ = read_raw_twix_data(str(dat_path), fix_oversampling=False)
-    if kspace_orig.ndim == 4:                       # (Nslices, Nlines, Ncoils, Nread)
-        sl = kspace_orig.shape[0] // 2
-        log(f"  Multi-slice scan ({kspace_orig.shape[0]} slices) — using slice {sl}")
-        kspace_orig = kspace_orig[sl]
+    # (Nslices, Nlines, Ncoils, Nread) → the chosen slice (else the middle one)
+    kspace_orig, slice_idx = select_slice(kspace_orig, slice_selector_cb, log)
     if kspace_orig.ndim != 3:
         raise ValueError(
             f"Unexpected raw k-space ndim {kspace_orig.ndim} (shape "

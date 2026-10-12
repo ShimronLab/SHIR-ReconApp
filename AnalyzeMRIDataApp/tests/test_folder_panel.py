@@ -115,3 +115,18 @@ def test_on_simulate_cancel_emits_nothing(qtbot, monkeypatch):
     panel.simulate_requested.connect(lambda js: emitted.append(js))
     panel._on_simulate()
     assert emitted == []                          # Cancel → no run
+
+
+def test_equispaced_json_swappe_scan_gets_its_own_json(tmp_path):
+    from ui.folder_panel import _find_equispaced_json
+    dat_dir = tmp_path / "scan" / "dat_files"
+    dat_dir.mkdir(parents=True)
+    root = dat_dir.parent
+    for name in ("Undersampled2equispaces.json", "Undersampled2equispaces_swapPE.json"):
+        (root / name).write_text("{}")
+    swap = _find_equispaced_json(dat_dir, "meas_equispaced_R2_acs24_swapPE_tse_t2.dat")
+    plain = _find_equispaced_json(dat_dir, "meas_equispaced_R2_acs24_tse_t2.dat")
+    assert swap.endswith("Undersampled2equispaces_swapPE.json")
+    assert plain.endswith("Undersampled2equispaces.json")
+    (root / "Undersampled2equispaces_swapPE.json").unlink()      # no swapPE variant: plain one
+    assert _find_equispaced_json(dat_dir, "x_R2_swapPE.dat").endswith("Undersampled2equispaces.json")

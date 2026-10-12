@@ -135,14 +135,17 @@ def _json_search_dirs(dat_folder: Path) -> list:
 
 
 def _find_equispaced_json(dat_folder: Path, dat_filename: str) -> Optional[str]:
-    """Find the equispaced trajectory JSON matching the R factor in the filename."""
+    """Find the equispaced trajectory JSON matching the R factor in the filename.
+    A swapPE scan prefers the `..._swapPE.json` variant written for it."""
     r = _extract_r_from_filename(dat_filename)
+    names = [pat.format(R=r) for pat in _EQUI_JSON_PATTERNS] if r is not None else []
+    if "swappe" in Path(dat_filename).stem.lower():
+        names = [n.replace(".json", "_swapPE.json") for n in names] + names
     for folder in _json_search_dirs(dat_folder):
-        if r is not None:
-            for pat in _EQUI_JSON_PATTERNS:
-                candidate = folder / pat.format(R=r)
-                if candidate.exists():
-                    return str(candidate)
+        for name in names:
+            candidate = folder / name
+            if candidate.exists():
+                return str(candidate)
     # Fall back to any undersampled JSON in the search folders
     for folder in _json_search_dirs(dat_folder):
         for candidate in sorted(folder.glob("[Uu]ndersampled*.json")):

@@ -256,6 +256,7 @@ class ReconWorker(QObject):
                     tse                = params.get("tse"),
                     reference_dat_path = job.get("reference_dat_path"),
                     progress_cb        = cb,
+                    slice_selector_cb  = slice_cb,
                 )
 
             elif stype == SCAN_RETRO_UNDERSAMPLE:
