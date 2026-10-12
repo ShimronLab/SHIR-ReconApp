@@ -201,28 +201,8 @@ def _nufft_zerofill_result(
     }
 
 
-def _reconstruct_cs_pattern(
-    dat_path: str,
-    *,
-    calib_width: int,
-    lambda_wav: float,
-    max_iter: int,
-    espirit_crop: float = 0.8,
-    tse: Optional[bool],
-    necho: Optional[int],
-    te1: Optional[float],
-    teeff: Optional[float],
-    log: Callable[[str], None],
-    slice_selector_cb: Optional[Callable[[int], int]] = None,
-) -> Dict[str, Any]:
-    """
-    Cartesian CS recon for undersampled unknowns: the sampling mask is derived
-    from the k-space itself (``bart pattern``; nonzero test without BART),
-    then ESPIRiT + PICS L1-wavelet — the same machinery equispaced_recon uses.
-    """
-    from .recon_backend import (
-        active_backend_label, espirit_maps, pics, use_bart,
-    )
+def _read_cs_legacy(dat_path, tse, necho, te1, teeff, slice_selector_cb, log):
+    """Original read for the CS path (Pulseq / unreadable headers) → (Nread, Nphase, Ncoils) complex64."""
     from .utils import crop_readout_oversampling
 
     kspace_cf = _read_slice_coilfirst(dat_path, log, slice_selector_cb)
@@ -247,9 +227,41 @@ def _reconstruct_cs_pattern(
             kspace_raw, _tse["necho"], _tse["TE1"], _tse["TEeff"], log_fn=log
         )
 
-    kspace_3d = np.transpose(kspace_raw, (2, 0, 1)).astype(np.complex64)
-    del kspace_raw                                     # (Nread, Nphase, Ncoils)
-    n_read, n_phase, _ = kspace_3d.shape
+    return np.transpose(kspace_raw, (2, 0, 1)).astype(np.complex64)
+
+
+def _reconstruct_cs_pattern(
+    dat_path: str,
+    *,
+    calib_width: int,
+    lambda_wav: float,
+    max_iter: int,
+    espirit_crop: float = 0.8,
+    tse: Optional[bool],
+    necho: Optional[int],
+    te1: Optional[float],
+    teeff: Optional[float],
+    log: Callable[[str], None],
+    slice_selector_cb: Optional[Callable[[int], int]] = None,
+) -> Dict[str, Any]:
+    """
+    Cartesian CS recon for undersampled unknowns: the sampling mask is derived
+    from the k-space itself (``bart pattern``; nonzero test without BART),
+    then ESPIRiT + PICS L1-wavelet — the same machinery equispaced_recon uses.
+    """
+    from .acquisition import acquire_cartesian, finalize_image, result_extras
+    from .recon_backend import (
+        active_backend_label, espirit_maps, pics, use_bart,
+    )
+
+    # Siemens files come on their full grid (gaps and partial-Fourier lines are
+    # zeros, so the pattern below sees them as unsampled).
+    asm = acquire_cartesian(dat_path, slice_selector_cb=slice_selector_cb, log=log)
+    if asm is not None:
+        kspace_3d = asm.kspace.astype(np.complex64)
+    else:                                              # Pulseq / unreadable header
+        kspace_3d = _read_cs_legacy(dat_path, tse, necho, te1, teeff, slice_selector_cb, log)
+    n_read, n_phase, _ = kspace_3d.shape               # (Nread, Nphase, Ncoils)
     k4d = kspace_3d[:, :, np.newaxis, :]
 
     # ── Sampling mask from the data itself ───────────────────────────────────
@@ -277,18 +289,26 @@ def _reconstruct_cs_pattern(
     # ── Normalise → ESPIRiT → PICS L1-wavelet ────────────────────────────────
     k4d_norm, _ = espirit_normalise(k4d, style="add")
 
-    log(f"Computing ESPIRiT sensitivity maps (calib={calib_width})…")
-    sens_maps = espirit_maps(k4d_norm, calib_width, num_maps=1,
+    calib = calib_width
+    if asm is not None:   # calibrate only inside the measured calibration region
+        calib = min(calib_width, asm.calib_range[1] - asm.calib_range[0])
+    log(f"Computing ESPIRiT sensitivity maps (calib={calib})…")
+    sens_maps = espirit_maps(k4d_norm, calib, num_maps=1,
                              crop=espirit_crop, log=log)
     log(f"Running CS PICS (λ_wav={lambda_wav}, iters={max_iter}, "
         f"{active_backend_label()})…")
-    combined = np.abs(np.squeeze(pics(
+    combined = finalize_image(np.abs(np.squeeze(pics(
         k4d_norm, sens_maps, soft_sense=True, reg="W",
         lam=lambda_wav, iters=max_iter, log=log,
-    )))
+    ))), asm)
+    sens_maps = finalize_image(sens_maps, asm)
     kspace_combined = _centered_fft2(combined)
     log("CS (pattern-mask) reconstruction complete.")
+    extras = result_extras(asm)
+    if asm is not None:
+        extras["pf_method"] = "model (PICS)"
     return {
+        **extras,
         "imgs_per_coil":   None,
         "cart_kspace":     None,
         "sens_maps":       sens_maps,

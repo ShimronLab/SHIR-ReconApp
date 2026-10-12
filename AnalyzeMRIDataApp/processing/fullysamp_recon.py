@@ -83,7 +83,6 @@ def reconstruct_fullysamp(
     from .acquisition import acquire_cartesian, finalize_image, result_extras
     from .partial_fourier import describe, pf_fill
 
-    log(f"Reading TWIX data: {Path(dat_path).name}")
     asm = acquire_cartesian(dat_path, slice_selector_cb=slice_selector_cb, log=log)
     if asm is None:                                     # Pulseq / unreadable header
         kspace_3d, _tse = _read_legacy(dat_path, expected_nx, tse, necho, te1, teeff,
@@ -169,6 +168,7 @@ def _read_legacy(dat_path, expected_nx, tse, necho, te1, teeff, slice_selector_c
     from read_siemens_scans.twix_reading import read_raw_twix_data
     from .utils import crop_readout_oversampling, select_slice
 
+    log(f"Reading TWIX data: {Path(dat_path).name}")
     kspace_raw, _ = read_raw_twix_data(str(dat_path), fix_oversampling=False)
     log(f"  Raw shape: {kspace_raw.shape}")
 

@@ -19,6 +19,7 @@ Pulseq headers carry interpreter placeholders (matrix, oversampling, even
 
 from dataclasses import dataclass
 from enum import Enum, IntFlag
+from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import numpy as np
@@ -167,6 +168,8 @@ def acquire_cartesian(
     from .utils import ensure_twix_importable, sequence_family
     if sequence_family(dat_path) != "siemens":
         return None
+    if log:
+        log(f"Reading TWIX data: {Path(dat_path).name}")
     ensure_twix_importable()
     from read_siemens_scans.twix_reading import read_raw_twix_data
     out = read_raw_twix_data(str(dat_path), fix_oversampling=False, with_meta=True)

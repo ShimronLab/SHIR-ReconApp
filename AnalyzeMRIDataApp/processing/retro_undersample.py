@@ -216,6 +216,7 @@ def reconstruct_retro(
     teeff: Optional[float] = None,
     progress_cb: Optional[Callable[[str], None]] = None,
     slice_selector_cb: Optional[Callable[[int], int]] = None,
+    pf_method: str = "zerofill",
 ) -> Dict[str, Any]:
     """
     Retrospectively undersample fully-sampled k-space and optionally reconstruct.
@@ -231,6 +232,9 @@ def reconstruct_retro(
     swap_pe_read : False (default) → undersample Phase axis (A-P, axis 1);
                    True            → undersample Readout axis (L-R, axis 0)
     rng_seed     : optional seed for VD mask randomness
+    pf_method    : partial-Fourier fill for Siemens inputs that were acquired
+                   with partial Fourier ("zerofill", "homodyne", "pocs"); the
+                   reference and the reconstruction use the same method
 
     Returns
     -------
@@ -253,47 +257,28 @@ def reconstruct_retro(
         if progress_cb:
             progress_cb(msg)
 
-    _add_twix_path()
-    from read_siemens_scans.twix_reading import read_raw_twix_data
-    from .utils import crop_readout_oversampling, select_slice
+    from .acquisition import LineCat, acquire_cartesian, finalize_image, result_extras
+    from .partial_fourier import describe, pf_fill
 
-    # ── 1. Read k-space ───────────────────────────────────────────────────────
-    log(f"[Retro Sim] Reading TWIX: {Path(dat_path).name}")
-    kspace_raw, _ = read_raw_twix_data(str(dat_path), fix_oversampling=False)
-    # Shape: (Nacq_PE, Ncoils, Nreadout) — or (Nslices, Nacq_PE, Ncoils, Nreadout) for multi-slice
-    log(f"  Raw shape: {kspace_raw.shape}")
-    kspace_raw, _ = select_slice(kspace_raw, slice_selector_cb, log)
-    # Shape: (Nacq_PE, Ncoils, Nreadout) — fully sampled, so Nacq_PE == n_phase.
-    n_acq, n_coils, _n_readout_raw = kspace_raw.shape
-    n_phase = n_acq   # n_acq IS the full PE dimension (all lines present)
-
-    # Crop readout oversampling before transpose; uses n_phase as expected_nx
-    # (valid for square fully-sampled scans; auto-detect handles non-OS data gracefully).
-    kspace_raw = crop_readout_oversampling(
-        kspace_raw, expected_nx=n_phase, readout_axis=2, log_fn=log,
-        dat_path=dat_path,
-    )
-    n_acq, n_coils, n_readout = kspace_raw.shape
-
-    # TSE un-scramble: a fully-sampled TSE input is stored in echo-train order,
-    # so un-scramble to true PE order before retrospective masking — otherwise
-    # both the reference and the simulated undersampling operate on scrambled
-    # k-space. SE/non-TSE → skipped.
-    from .tse_reorder import detect_tse_params, unscramble_rows
-    _tse = detect_tse_params(dat_path, tse=tse, necho=necho, te1=te1, teeff=teeff)
-    if _tse is not None:
-        log(f"  TSE detected — un-scrambling echo order (necho={_tse['necho']}).")
-        kspace_raw = unscramble_rows(
-            kspace_raw, _tse["necho"], _tse["TE1"], _tse["TEeff"], log_fn=log
-        )
-
-    # Rearrange to (Nreadout, Nphase, Ncoils)
-    full_kspace = np.transpose(kspace_raw, (2, 0, 1)).astype(np.complex128)
+    # ── 1. Read k-space (Nreadout, Nphase, Ncoils) ────────────────────────────
+    # Siemens files come on their full phase-encode grid: never-acquired
+    # partial-Fourier lines are zeros and the k-space centre is the middle row.
+    asm = acquire_cartesian(dat_path, slice_selector_cb=slice_selector_cb, log=log)
+    if asm is None:                                   # Pulseq / unreadable header
+        full_kspace, _tse = _read_legacy(dat_path, tse, necho, te1, teeff,
+                                         slice_selector_cb, log)
+    else:
+        full_kspace, _tse = asm.kspace, None
+    n_readout, n_phase = full_kspace.shape[:2]
 
     # ── 2. Fully-sampled reference image ──────────────────────────────────────
+    # Same partial-Fourier method as the reconstruction, prescribed FOV.
     log("  Computing fully-sampled RSS reference…")
-    fs_imgs = _ifft2c(full_kspace)
-    fully_sampled_image = np.sqrt(np.sum(np.abs(fs_imgs) ** 2, axis=2)).astype(np.float32)
+    fs_filled = (pf_fill(full_kspace, asm.line_category, pf_method) if asm is not None
+                 else full_kspace)
+    fs_imgs = _ifft2c(fs_filled)
+    fully_sampled_image = finalize_image(
+        np.sqrt(np.sum(np.abs(fs_imgs) ** 2, axis=2)).astype(np.float32), asm)
 
     # Pre-compute fully-sampled k-space RSS for display
     fs_kspace_rss = np.sqrt(np.sum(np.abs(full_kspace) ** 2, axis=2)).astype(np.float32)
@@ -308,9 +293,12 @@ def reconstruct_retro(
             from .recon_backend import espirit_maps as _emaps, pics as _pics
             _k4d = full_kspace[:, :, np.newaxis, :].astype(np.complex64)
             _k4d_norm, _ = espirit_normalise(_k4d)
-            _maps = _emaps(_k4d_norm, calib_width, num_maps=1, log=log)
+            _calib = calib_width
+            if asm is not None:   # calibrate only inside the symmetric measured region
+                _calib = min(calib_width, asm.calib_range[1] - asm.calib_range[0])
+            _maps = _emaps(_k4d_norm, _calib, num_maps=1, crop=espirit_crop, log=log)
             _ref = _pics(_k4d_norm, _maps, soft_sense=True, iters=sense_max_iter, log=log)
-            fully_sampled_image = np.abs(np.squeeze(_ref)).astype(np.float32)
+            fully_sampled_image = finalize_image(np.abs(np.squeeze(_ref)).astype(np.float32), asm)
             log("  Using a matched SENSE-combined fully-sampled reference.")
         except Exception as _e:
             log(f"  [WARN] matched SENSE reference failed ({_e}); using RSS.")
@@ -324,6 +312,9 @@ def reconstruct_retro(
         pe_mask = build_vd_mask(mask_size, R, power_decay, acs_lines, rng=rng)
     else:
         pe_mask = build_equispaced_mask(mask_size, R, acs_lines)
+    if asm is not None and not swap_pe_read:
+        # The simulation can only keep lines that were actually measured.
+        pe_mask = pe_mask & asm.pe_mask
 
     acquired_pe_idx = np.where(pe_mask)[0]
     actual_r = mask_size / max(len(acquired_pe_idx), 1)
@@ -346,7 +337,8 @@ def reconstruct_retro(
     ).astype(np.float32)
 
     # ── 5. Zero-filled image ──────────────────────────────────────────────────
-    zf_image = np.sqrt(np.sum(np.abs(_ifft2c(undersampled_kspace)) ** 2, axis=2)).astype(np.float32)
+    zf_image = finalize_image(
+        np.sqrt(np.sum(np.abs(_ifft2c(undersampled_kspace)) ** 2, axis=2)).astype(np.float32), asm)
 
     # ── 6. Optional reconstruction ────────────────────────────────────────────
     recon_image = None
@@ -485,11 +477,23 @@ def reconstruct_retro(
             except (RuntimeError, ImportError) as exc:
                 log(f"  Recon failed ({exc}); falling back to zero-fill")
 
+        # GRAPPA fills acceleration gaps only: clear what it extrapolated into
+        # never-acquired partial-Fourier lines and apply the partial-Fourier step.
+        if recon_kspace is not None and asm is not None:
+            pf_rows = (asm.line_category & np.uint8(LineCat.PF_MISSING)) != 0
+            if pf_rows.any():
+                recon_kspace[:, pf_rows, :] = 0
+                recon_kspace = pf_fill(recon_kspace, asm.line_category, pf_method)
+        if sense_img is not None:
+            sense_img = finalize_image(sense_img, asm)
+        if sens_maps_out is not None:
+            sens_maps_out = finalize_image(sens_maps_out, asm)
+
         # Final reconstructed image
         if recon_kspace is not None:
-            recon_image = np.sqrt(
+            recon_image = finalize_image(np.sqrt(
                 np.sum(np.abs(_ifft2c(recon_kspace)) ** 2, axis=2)
-            ).astype(np.float32)
+            ).astype(np.float32), asm)
             recon_kspace_rss = np.sqrt(
                 np.sum(np.abs(recon_kspace) ** 2, axis=2)
             ).astype(np.float32)
@@ -528,7 +532,7 @@ def reconstruct_retro(
     log(f"[Retro Sim] Done — {mask_type.upper()}, axis={axis_label}, "
         f"R={actual_r:.2f}×, method={_mlabel(recon_method)}")
 
-    return {
+    result = {
         "pe_mask":                  pe_mask,
         "acs_start":                acs_start,
         "acs_end":                  acs_end,
@@ -563,3 +567,54 @@ def reconstruct_retro(
             "rng_seed":         rng_seed,
         },
     }
+    if asm is not None:
+        result.update(result_extras(asm))
+        # actual_r is the total over the full grid; split it into the simulated
+        # acceleration and the scan's own partial-Fourier factor.
+        r_pf = 1.0 if swap_pe_read else asm.r_parts()[1]
+        result["r_accel"], result["r_pf"] = actual_r / r_pf, r_pf
+        result["pf_method"] = describe(
+            "model (PICS)" if recon_method not in ("none", "grappa", "ggrappa") else pf_method,
+            asm.line_category)
+    return result
+
+
+def _read_legacy(dat_path, tse, necho, te1, teeff, slice_selector_cb, log):
+    """
+    Original read path (Pulseq and unreadable headers): the stored lines are
+    the phase-encode grid. Returns ((Nreadout, Nphase, Ncoils) complex128, tse params).
+    """
+    _add_twix_path()
+    from read_siemens_scans.twix_reading import read_raw_twix_data
+    from .utils import crop_readout_oversampling, select_slice
+
+    log(f"[Retro Sim] Reading TWIX: {Path(dat_path).name}")
+    kspace_raw, _ = read_raw_twix_data(str(dat_path), fix_oversampling=False)
+    # Shape: (Nacq_PE, Ncoils, Nreadout) — or (Nslices, Nacq_PE, Ncoils, Nreadout) for multi-slice
+    log(f"  Raw shape: {kspace_raw.shape}")
+    kspace_raw, _ = select_slice(kspace_raw, slice_selector_cb, log)
+    # Shape: (Nacq_PE, Ncoils, Nreadout) — fully sampled, so Nacq_PE == n_phase.
+    n_acq, n_coils, _n_readout_raw = kspace_raw.shape
+    n_phase = n_acq   # n_acq IS the full PE dimension (all lines present)
+
+    # Crop readout oversampling before transpose; uses n_phase as expected_nx
+    # (valid for square fully-sampled scans; auto-detect handles non-OS data gracefully).
+    kspace_raw = crop_readout_oversampling(
+        kspace_raw, expected_nx=n_phase, readout_axis=2, log_fn=log,
+        dat_path=dat_path,
+    )
+
+    # TSE un-scramble: a fully-sampled TSE input is stored in echo-train order,
+    # so un-scramble to true PE order before retrospective masking — otherwise
+    # both the reference and the simulated undersampling operate on scrambled
+    # k-space. SE/non-TSE → skipped.
+    from .tse_reorder import detect_tse_params, unscramble_rows
+    _tse = detect_tse_params(dat_path, tse=tse, necho=necho, te1=te1, teeff=teeff)
+    if _tse is not None:
+        log(f"  TSE detected — un-scrambling echo order (necho={_tse['necho']}).")
+        kspace_raw = unscramble_rows(
+            kspace_raw, _tse["necho"], _tse["TE1"], _tse["TEeff"], log_fn=log
+        )
+
+    # Rearrange to (Nreadout, Nphase, Ncoils)
+    return np.transpose(kspace_raw, (2, 0, 1)).astype(np.complex128), _tse

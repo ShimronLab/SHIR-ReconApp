@@ -167,96 +167,16 @@ def _build_grappa_mask_computed(
     return pe_mask, np.where(pe_mask)[0], acs_start, acs_end
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Main reconstruction function
-# ─────────────────────────────────────────────────────────────────────────────
-
-def reconstruct_equispaced(
-    dat_path: str,
-    *,
-    method: str = "grappa",
-    json_path: Optional[str] = None,
-    mask_method: str = "analytical",
-    # GRAPPA params
-    acs_lines: int = 24,
-    r_factor: int = 4,
-    kernel_size: tuple = (5, 5),
-    lamda: float = 0.01,
-    # SENSE params
-    calib_width: int = 24,
-    sense_lambda: float = 0.01,
-    sense_max_iter: int = 100,
-    sense_l2: bool = False,
-    # ESPIRiT params
-    espirit_num_maps: int = 2,
-    espirit_crop: float = 0.8,      # ESPIRiT eigenvalue mask threshold (both engines)
-    # TSE un-scramble (echo-train order → true PE order)
-    tse: Optional[bool] = None,
-    necho: Optional[int] = None,
-    te1: Optional[float] = None,
-    teeff: Optional[float] = None,
-    # Misc
-    reference_dat_path: Optional[str] = None,
-    progress_cb: Optional[Callable[[str], None]] = None,
-    slice_selector_cb: Optional[Callable[[int], int]] = None,
-    mask_fallback_cb: Optional[Callable[[], str]] = None,
-) -> Dict[str, Any]:
+def _legacy_geometry(
+    dat_path, *, json_path, mask_method, acs_lines, r_factor, tse, necho, te1, teeff,
+    reference_dat_path, slice_selector_cb, mask_fallback_cb, log,
+):
     """
-    Equispaced under-sampled reconstruction.
-
-    Parameters
-    ----------
-    dat_path : str
-        Path to the equispaced .dat file.
-    method : str
-        Reconstruction method: "grappa" | "grappa_sense" | "sense" | "sense_cs" | "espirit" | "espirit_l1".
-    json_path : str, optional
-        Path to Undersampled4equispaces.json for PE mask derivation.
-        Falls back to computed equispaced mask if None or loading fails.
-    acs_lines : int
-        Number of ACS lines (GRAPPA only, default 24).
-    r_factor : int
-        Under-sampling factor (GRAPPA fallback mask, default 4).
-    kernel_size : tuple
-        GRAPPA kernel size rows×cols (default (5, 5)).
-    lamda : float
-        Tikhonov regularisation weight for pygrappa (default 0.01).
-    calib_width : int
-        ESPIRiT calibration region width in pixels (SENSE only, default 24).
-    sense_lambda : float
-        L1 regularisation weight for CS-SENSE (default 0.01).
-    sense_max_iter : int
-        PICS iteration count for CS-SENSE (default 100).
-    sense_l2 : bool
-        When True and method="sense", add L2 regularisation (BART PICS -S -l2).
-        Has no effect for "sense_cs" or "grappa" (default False).
-    reference_dat_path : str, optional
-        Fully-sampled reference for RMSE/PSNR computation.
-    progress_cb : callable(str), optional
-        Status callback.
-
-    Returns
-    -------
-    dict with keys:
-        undersampled_kspace_rss : (Nreadout, Nphase) float32
-        recon_kspace_rss        : (Nreadout, Nphase) float32   (GRAPPA k-space or zero-filled)
-        zf_image                : (Nreadout, Nphase)
-        grappa_image            : (Nreadout, Nphase)  primary reconstructed image (any method)
-        sense_image             : (Nreadout, Nphase) or None   (SENSE methods only)
-        sens_maps               : ndarray or None               (SENSE methods only)
-        pe_mask                 : (Nphase,) bool
-        acs_start, acs_end      : int
-        actual_r                : float
-        reference_image         : (Nr, Np) or None
-        rmse, psnr              : float or None
-        method                  : str
-        params                  : dict
+    Original geometry path (Pulseq and unreadable headers): n_phase from the
+    reference or candidate sizes, mask from the JSON / analytical pattern /
+    sampling pattern, lines placed in mask order (TSE plan for Pulseq TSE),
+    Siemens refscan overlay. Returns what the reconstruction stage needs.
     """
-
-    def log(msg: str) -> None:
-        if progress_cb:
-            progress_cb(msg)
-
     _add_twix_path()
     from read_siemens_scans.twix_reading import read_raw_twix_data
     from .utils import crop_readout_oversampling, select_slice
@@ -564,6 +484,148 @@ def reconstruct_equispaced(
                 log(f"  pattern: unexpected shape {pe_mask_bart.shape}; keeping analytical mask")
         except Exception as exc:
             log(f"  pattern extraction failed ({exc}); keeping analytical mask")
+    return (full_kspace, calib, pe_mask, acs_start, acs_end, actual_r, n_phase,
+            _refscan_sl, _ref_raw_cache, mask_method, r_factor, _tse)
+
+
+def _siemens_geometry(asm, r_factor, log):
+    """
+    Geometry read from the file itself (processing.acquisition): lines already
+    sit on the full grid by their MDH counters, integrated reference lines are
+    merged, so the mask, calibration block and acceleration are measured, not
+    guessed. No JSON, filename R or reference probing is needed.
+    """
+    from .acquisition import LineCat, UnsupportedAcquisition
+    full_kspace = asm.kspace
+    n_phase = full_kspace.shape[1]
+    has_calib = np.any(asm.line_category & np.uint8(LineCat.CALIB))
+    r_accel, _r_pf, actual_r = asm.r_parts()
+    if not has_calib and r_accel > 1.01:
+        raise UnsupportedAcquisition(
+            "This accelerated scan has no calibration (reference) lines, so GRAPPA/SENSE "
+            "cannot be calibrated.")
+    acs_start, acs_end = asm.calib_range
+    calib = full_kspace[:, acs_start:acs_end, :]
+    pe_mask = asm.pe_mask
+    log(f"  Mask from line counters: {int(pe_mask.sum())} / {n_phase} lines "
+        f"(R = {actual_r:.2f}×), calibration lines [{acs_start}, {acs_end})")
+    return (full_kspace, calib, pe_mask, acs_start, acs_end, actual_r, n_phase,
+            asm.slice_idx, None, "line counters (MDH)", r_factor, None)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Main reconstruction function
+# ─────────────────────────────────────────────────────────────────────────────
+
+def reconstruct_equispaced(
+    dat_path: str,
+    *,
+    method: str = "grappa",
+    json_path: Optional[str] = None,
+    mask_method: str = "analytical",
+    # GRAPPA params
+    acs_lines: int = 24,
+    r_factor: int = 4,
+    kernel_size: tuple = (5, 5),
+    lamda: float = 0.01,
+    # SENSE params
+    calib_width: int = 24,
+    sense_lambda: float = 0.01,
+    sense_max_iter: int = 100,
+    sense_l2: bool = False,
+    # ESPIRiT params
+    espirit_num_maps: int = 2,
+    espirit_crop: float = 0.8,      # ESPIRiT eigenvalue mask threshold (both engines)
+    # TSE un-scramble (echo-train order → true PE order)
+    tse: Optional[bool] = None,
+    necho: Optional[int] = None,
+    te1: Optional[float] = None,
+    teeff: Optional[float] = None,
+    # Misc
+    reference_dat_path: Optional[str] = None,
+    progress_cb: Optional[Callable[[str], None]] = None,
+    slice_selector_cb: Optional[Callable[[int], int]] = None,
+    mask_fallback_cb: Optional[Callable[[], str]] = None,
+    pf_method: str = "zerofill",
+) -> Dict[str, Any]:
+    """
+    Equispaced under-sampled reconstruction.
+
+    Parameters
+    ----------
+    dat_path : str
+        Path to the equispaced .dat file.
+    method : str
+        Reconstruction method: "grappa" | "grappa_sense" | "sense" | "sense_cs" | "espirit" | "espirit_l1".
+    json_path : str, optional
+        Path to Undersampled4equispaces.json for PE mask derivation.
+        Falls back to computed equispaced mask if None or loading fails.
+    acs_lines : int
+        Number of ACS lines (GRAPPA only, default 24).
+    r_factor : int
+        Under-sampling factor (GRAPPA fallback mask, default 4).
+    kernel_size : tuple
+        GRAPPA kernel size rows×cols (default (5, 5)).
+    lamda : float
+        Tikhonov regularisation weight for pygrappa (default 0.01).
+    calib_width : int
+        ESPIRiT calibration region width in pixels (SENSE only, default 24).
+    sense_lambda : float
+        L1 regularisation weight for CS-SENSE (default 0.01).
+    sense_max_iter : int
+        PICS iteration count for CS-SENSE (default 100).
+    sense_l2 : bool
+        When True and method="sense", add L2 regularisation (BART PICS -S -l2).
+        Has no effect for "sense_cs" or "grappa" (default False).
+    reference_dat_path : str, optional
+        Fully-sampled reference for RMSE/PSNR computation.
+    progress_cb : callable(str), optional
+        Status callback.
+
+    Returns
+    -------
+    dict with keys:
+        undersampled_kspace_rss : (Nreadout, Nphase) float32
+        recon_kspace_rss        : (Nreadout, Nphase) float32   (GRAPPA k-space or zero-filled)
+        zf_image                : (Nreadout, Nphase)
+        grappa_image            : (Nreadout, Nphase)  primary reconstructed image (any method)
+        sense_image             : (Nreadout, Nphase) or None   (SENSE methods only)
+        sens_maps               : ndarray or None               (SENSE methods only)
+        pe_mask                 : (Nphase,) bool
+        acs_start, acs_end      : int
+        actual_r                : float
+        reference_image         : (Nr, Np) or None
+        rmse, psnr              : float or None
+        method                  : str
+        params                  : dict
+    """
+
+    def log(msg: str) -> None:
+        if progress_cb:
+            progress_cb(msg)
+
+    from .acquisition import acquire_cartesian, finalize_image, result_extras
+    from .partial_fourier import describe, pf_fill
+    from .utils import crop_readout_oversampling
+
+    # ── 1-3. Geometry: k-space on its phase-encode grid, mask, calibration ───
+    asm = acquire_cartesian(dat_path, slice_selector_cb=slice_selector_cb, log=log)
+    if asm is not None and asm.facts.get("ref_mode") == "separate":
+        log("  Separate reference scan: not supported by the header path yet — "
+            "using the legacy geometry.")
+        asm = None
+    if asm is None:                                    # Pulseq / unreadable header
+        (full_kspace, calib, pe_mask, acs_start, acs_end, actual_r, n_phase,
+         _refscan_sl, _ref_raw_cache, mask_method, r_factor, _tse) = _legacy_geometry(
+            dat_path, json_path=json_path, mask_method=mask_method, acs_lines=acs_lines,
+            r_factor=r_factor, tse=tse, necho=necho, te1=te1, teeff=teeff,
+            reference_dat_path=reference_dat_path, slice_selector_cb=slice_selector_cb,
+            mask_fallback_cb=mask_fallback_cb, log=log,
+        )
+    else:
+        (full_kspace, calib, pe_mask, acs_start, acs_end, actual_r, n_phase,
+         _refscan_sl, _ref_raw_cache, mask_method, r_factor, _tse) = _siemens_geometry(
+            asm, r_factor, log)
 
     # ── 4a. GRAPPA reconstruction ─────────────────────────────────────────────
     recon_kspace  = None
@@ -572,17 +634,31 @@ def reconstruct_equispaced(
 
     if method in ("grappa", "grappa_sense"):
         log(f"Running GRAPPA (pygrappa / mdgrappa), kernel {kernel_size}…")
+        # GRAPPA fills acceleration gaps only: never-acquired partial-Fourier
+        # lines are left to the partial-Fourier step afterwards.
+        pi_lo, pi_hi = asm.pi_range if asm is not None else (0, n_phase)
         try:
             from pygrappa import mdgrappa
-            recon_kspace = mdgrappa(
-                kspace=full_kspace,
-                calib=calib,
-                kernel_size=kernel_size,
-                lamda=lamda,
-            )
+            if (pi_lo, pi_hi) == (0, n_phase):
+                recon_kspace = mdgrappa(
+                    kspace=full_kspace,
+                    calib=calib,
+                    kernel_size=kernel_size,
+                    lamda=lamda,
+                )
+            else:
+                recon_kspace = full_kspace.copy()
+                recon_kspace[:, pi_lo:pi_hi] = mdgrappa(
+                    kspace=full_kspace[:, pi_lo:pi_hi],
+                    calib=calib,
+                    kernel_size=kernel_size,
+                    lamda=lamda,
+                )
         except ImportError:
             log("  pygrappa not found – falling back to zero-fill")
             recon_kspace = full_kspace.copy()
+        if asm is not None:
+            recon_kspace = pf_fill(recon_kspace, asm.line_category, pf_method)
         log(f"  Filled k-space shape: {recon_kspace.shape}")
 
         # ── 4a-ii. GRAPPA + sensitivity-map coil combination ──────────────────
@@ -697,7 +773,13 @@ def reconstruct_equispaced(
 
     # ── 5. Reconstruct images ─────────────────────────────────────────────────
     log("Reconstructing images (IFFT + RSS)…")
-    zf_image = np.sqrt(np.sum(np.abs(_ifft2c(full_kspace)) ** 2, axis=2))
+    # finalize_image crops phase oversampling (Siemens files) so every image
+    # shows the prescribed field of view; it is a no-op on the legacy path.
+    zf_image = finalize_image(np.sqrt(np.sum(np.abs(_ifft2c(full_kspace)) ** 2, axis=2)), asm)
+    if sense_image is not None:
+        sense_image = finalize_image(sense_image, asm)
+    if sens_maps_out is not None:
+        sens_maps_out = finalize_image(sens_maps_out, asm)
     log(f"  Zero-filled image shape: {zf_image.shape}")
 
     # BART PICS (SENSE / CS-SENSE / ESPIRiT*) runs on k-space that was divided by
@@ -724,7 +806,8 @@ def reconstruct_equispaced(
         # grappa_sense: primary image is the sensitivity-weighted combination
         grappa_image = sense_image
     elif recon_kspace is not None:
-        grappa_image = np.sqrt(np.sum(np.abs(_ifft2c(recon_kspace)) ** 2, axis=2))
+        grappa_image = finalize_image(
+            np.sqrt(np.sum(np.abs(_ifft2c(recon_kspace)) ** 2, axis=2)), asm)
     elif sense_image is not None:
         grappa_image = sense_image
     else:
@@ -747,7 +830,17 @@ def reconstruct_equispaced(
     reference_warning = None
     _ref_orient_keys: Dict[str, Any] = {}
 
-    if reference_dat_path is not None:
+    if reference_dat_path is not None and asm is not None:
+        # Siemens scan: the reference goes through the same full-grid path
+        # (same partial-Fourier method, prescribed FOV). Coil-combined recons
+        # get a matched SENSE reference, pure GRAPPA an RSS one (see below).
+        from .reference import load_reference_rss
+        reference_image = load_reference_rss(
+            reference_dat_path, combine="rss" if method == "grappa" else "sense",
+            slice_idx=_refscan_sl, tse=tse, necho=necho, te1=te1, teeff=teeff,
+            calib_width=calib_width, pf_method=pf_method, log=log,
+        )
+    elif reference_dat_path is not None:
         log(f"Loading reference: {Path(reference_dat_path).name}")
         # Reuse the already-read reference (probed early for n_phase); re-read only if needed.
         if _ref_raw_cache is not None:
@@ -795,6 +888,7 @@ def reconstruct_equispaced(
             except Exception as _e:
                 log(f"  [WARN] matched SENSE reference failed ({_e}); using RSS.")
 
+    if reference_dat_path is not None:
         # Resize the reference to the recon, flag a sequence/matrix mismatch,
         # and compute the metrics — shared with the Poisson recon.
         from .reference import compare_to_reference
@@ -815,7 +909,7 @@ def reconstruct_equispaced(
     from .constants import method_label as _mlabel
     log(f"{_mlabel(method)} reconstruction complete.")
 
-    return {
+    result = {
         "undersampled_kspace_rss": undersampled_kspace_rss,
         "recon_kspace_rss":        recon_kspace_rss,
         # Keep legacy key name so existing display / PDF code works unchanged
@@ -850,3 +944,9 @@ def reconstruct_equispaced(
             "tse":              _tse,
         },
     }
+    if asm is not None:
+        result.update(result_extras(asm))
+        pics_based = method not in ("grappa", "grappa_sense")
+        result["pf_method"] = describe("model (PICS)" if pics_based else pf_method,
+                                       asm.line_category)
+    return result
