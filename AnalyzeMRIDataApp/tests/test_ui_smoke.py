@@ -105,3 +105,60 @@ def test_all_coils_feedback_when_absent(main_window, monkeypatch):
     assert main_window._results_viewer.show_all_coils_current() is False
     main_window._on_all_coils()
     assert "No per-coil images" in main_window._status_label.text()
+
+
+class _WaitingWorker:
+    """Stands in for a ReconWorker blocked on the slice dialog."""
+    def __init__(self, job):
+        self._job = job
+        self.choice = None
+
+    def set_slice_choice(self, idx):
+        self.choice = idx
+
+
+def test_slice_dialog_queues_extra_slices(main_window, monkeypatch):
+    """Ticking several slices runs the first in the current job and queues the
+    rest right after it, each tagged with its slice for a unique tab label."""
+    import ui.main_window as mw
+    monkeypatch.setattr(mw, "_ask_slices", lambda _parent, _n: [2, 5, 7])
+    later_job = {"dat_path": "other.dat", "scan_type": "FULLY_SAMPLED"}
+    main_window._job_queue = [later_job]
+    main_window._jobs_total = 2
+    worker = _WaitingWorker({"dat_path": "multi.dat", "scan_type": "FULLY_SAMPLED",
+                             "folder_key": "k-space"})
+    main_window._active_worker = worker
+
+    main_window._on_slice_selection_needed(11)
+
+    assert worker.choice == 2
+    assert worker._job["slice_idx"] == 2 and worker._job["n_slices"] == 11
+    queued = main_window._job_queue
+    assert [j.get("slice_idx") for j in queued] == [5, 7, None]
+    assert queued[-1] is later_job                       # other scans keep their place
+    assert all(j["dat_path"] == "multi.dat" for j in queued[:2])
+    assert main_window._jobs_total == 4
+    assert "slice 6/11" in mw._make_label(queued[0])     # labels are 1-based
+
+
+def test_ask_slices_dialog_builds(main_window, monkeypatch):
+    """The real dialog constructs and, accepted untouched, returns the middle slice."""
+    import ui.main_window as mw
+    monkeypatch.setattr(mw.QDialog, "exec_", lambda _self: mw.QDialog.Accepted)
+    assert mw._ask_slices(main_window, 11) == [5]
+    monkeypatch.setattr(mw.QDialog, "exec_", lambda _self: mw.QDialog.Rejected)
+    assert mw._ask_slices(main_window, 11) == []
+
+
+def test_slice_dialog_cancel_uses_middle_slice(main_window, monkeypatch):
+    import ui.main_window as mw
+    monkeypatch.setattr(mw, "_ask_slices", lambda _parent, _n: [])
+    main_window._job_queue = []
+    main_window._jobs_total = 1
+    worker = _WaitingWorker({"dat_path": "multi.dat", "scan_type": "FULLY_SAMPLED"})
+    main_window._active_worker = worker
+
+    main_window._on_slice_selection_needed(11)
+
+    assert worker.choice == 5
+    assert main_window._job_queue == []

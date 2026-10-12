@@ -55,3 +55,19 @@ def test_equispaced_grappa_with_reference(sample_scan_dir):
     # A reference was supplied → finite comparison metrics.
     assert result["reference_image"] is not None
     assert np.isfinite(result["rmse"])
+
+
+def test_pulseq_oversampled_readout_is_cropped(sample_scan_dir):
+    """Pulseq scan acquired with 640 readout samples for a 320 matrix. Its header
+    claims no oversampling (interpreter placeholder), so the factor must be
+    inferred from the data and the image must come out 320 x 320."""
+    from processing.fullysamp_recon import reconstruct_fullysamp
+
+    folder = (sample_scan_dir.parent.parent / "subject_10000_07_06_26"
+              / "200012_oversampling" / "dat_files")
+    matches = sorted(folder.glob("*band_se_fully_sampled*.dat"))
+    if not matches:
+        pytest.skip(f"oversampled Pulseq scan not available in {folder}")
+
+    result = reconstruct_fullysamp(str(matches[0]), use_sense=False, tse=False)
+    assert result["image_rss"].shape == (320, 320)

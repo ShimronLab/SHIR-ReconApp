@@ -285,7 +285,8 @@ def reconstruct_retro(
     # Crop readout oversampling before transpose; uses n_phase as expected_nx
     # (valid for square fully-sampled scans; auto-detect handles non-OS data gracefully).
     kspace_raw = crop_readout_oversampling(
-        kspace_raw, expected_nx=n_phase, readout_axis=2, log_fn=log
+        kspace_raw, expected_nx=n_phase, readout_axis=2, log_fn=log,
+        dat_path=dat_path,
     )
     n_acq, n_coils, n_readout = kspace_raw.shape
 

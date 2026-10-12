@@ -242,7 +242,8 @@ def _reconstruct_cs_pattern(
     # factor can be off. Never let it abort the CS recon — proceed uncropped.
     try:
         kspace_raw = crop_readout_oversampling(
-            kspace_raw, expected_nx=kspace_raw.shape[0], readout_axis=2, log_fn=log
+            kspace_raw, expected_nx=kspace_raw.shape[0], readout_axis=2, log_fn=log,
+            dat_path=dat_path,
         )
     except Exception as exc:
         log(f"  [WARN] readout OS crop skipped ({exc}).")

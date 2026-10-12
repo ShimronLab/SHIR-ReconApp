@@ -51,11 +51,12 @@ def test_win_to_wsl(win, wsl):
     assert win_to_wsl(win) == wsl
 
 
-def test_bart_command_leaves_regularization_args():
+def test_bart_command_leaves_regularization_args(monkeypatch):
     """The drive-letter guard lives in _bart_command's _WIN_PATH_RE (it requires
     a slash after the colon), so BART reg args like 'W:7:0:0.01' are never fed
     to win_to_wsl. On non-Windows, _bart_command passes args through verbatim."""
     from processing.utils import _WIN_PATH_RE, _bart_command
+    monkeypatch.delenv("MRI_BART_BIN", raising=False)   # default binary name
     assert _WIN_PATH_RE.match("W:7:0:0.01") is None      # not treated as a path
     assert _WIN_PATH_RE.match(r"C:\x") is not None        # real path is
     assert _bart_command(["pics", "-R", "W:7:0:0.01"])[0] == "bart"  # Linux passthrough

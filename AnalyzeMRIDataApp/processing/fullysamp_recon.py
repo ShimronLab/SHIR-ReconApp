@@ -102,11 +102,12 @@ def reconstruct_fullysamp(
     log(f"  Slice shape (Nacq, Ncoils, Nread): {kspace_raw.shape}")
 
     # Crop readout oversampling if the sequence was acquired with 2× OS.
-    # Auto-detects by comparing actual readout size to the PE matrix size
-    # (expected_nx falls back to kspace_raw.shape[0] = n_phase for square scans).
+    # The factor comes from the TWIX header; when absent, it is guessed by
+    # comparing the readout size to expected_nx (falls back to n_phase).
     _exp_nx = expected_nx if expected_nx is not None else kspace_raw.shape[0]
     kspace_raw = crop_readout_oversampling(
-        kspace_raw, expected_nx=_exp_nx, readout_axis=2, log_fn=log
+        kspace_raw, expected_nx=_exp_nx, readout_axis=2, log_fn=log,
+        dat_path=dat_path,
     )
 
     # TSE un-scramble: our Pulseq TSE sequences set no LIN label, so the reader

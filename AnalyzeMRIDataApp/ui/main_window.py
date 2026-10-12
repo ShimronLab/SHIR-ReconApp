@@ -31,13 +31,17 @@ from PyQt5.QtGui import QIcon, QTextCursor
 from PyQt5.QtWidgets import (
     QAction,
     QApplication,
+    QDialog,
+    QDialogButtonBox,
     QFileDialog,
     QHBoxLayout,
-    QInputDialog,
     QLabel,
+    QListWidget,
+    QListWidgetItem,
     QMainWindow,
     QMessageBox,
     QProgressBar,
+    QPushButton,
     QSplitter,
     QStatusBar,
     QTextEdit,
@@ -351,6 +355,50 @@ def _ensure_processing_on_path() -> None:
         sys.path.insert(0, app_dir)
 
 
+def _ask_slices(parent: QWidget, n_slices: int) -> List[int]:
+    """
+    Checkable slice list with the middle slice pre-ticked. Returns the ticked
+    slice indices in ascending order, or [] when cancelled / nothing ticked.
+    """
+    dlg = QDialog(parent)
+    dlg.setWindowTitle("Multi-Slice Scan Detected")
+    layout = QVBoxLayout(dlg)
+    layout.addWidget(QLabel(
+        f"This scan contains {n_slices} slices (0–{n_slices - 1}).\n"
+        "Tick the slices to reconstruct — each one gets its own result tab:"
+    ))
+
+    slice_list = QListWidget(dlg)
+    for k in range(n_slices):
+        item = QListWidgetItem(f"slice {k}")
+        item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
+        item.setCheckState(Qt.Checked if k == n_slices // 2 else Qt.Unchecked)
+        slice_list.addItem(item)
+    layout.addWidget(slice_list)
+
+    def set_all(state) -> None:
+        for i in range(slice_list.count()):
+            slice_list.item(i).setCheckState(state)
+
+    row = QHBoxLayout()
+    for text, state in (("All", Qt.Checked), ("None", Qt.Unchecked)):
+        btn = QPushButton(text, dlg)
+        btn.clicked.connect(lambda _checked=False, s=state: set_all(s))
+        row.addWidget(btn)
+    row.addStretch(1)
+    layout.addLayout(row)
+
+    buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel, parent=dlg)
+    buttons.accepted.connect(dlg.accept)
+    buttons.rejected.connect(dlg.reject)
+    layout.addWidget(buttons)
+
+    if dlg.exec_() != QDialog.Accepted:
+        return []
+    return [i for i in range(slice_list.count())
+            if slice_list.item(i).checkState() == Qt.Checked]
+
+
 def _make_label(job: Dict) -> str:
     folder_key = job.get("folder_key", "")
     stype      = job.get("scan_type", "")
@@ -642,24 +690,32 @@ class MainWindow(QMainWindow):
         self._update_result_actions()
 
     def _on_slice_selection_needed(self, n_slices: int) -> None:
-        """Main-thread slot: show a dialog and send the selected slice back to the worker."""
-        idx, ok = QInputDialog.getInt(
-            self,
-            "Multi-Slice Scan Detected",
-            f"This scan contains {n_slices} slices (0–{n_slices - 1}).\n"
-            f"Enter the slice index to reconstruct:",
-            value=n_slices // 2,
-            min=0,
-            max=n_slices - 1,
-            step=1,
-        )
-        if not ok:
-            idx = n_slices // 2
-            self._log_msg(f"  Slice selection cancelled — using middle slice {idx}")
+        """
+        Main-thread slot: ask which slice(s) to reconstruct. The waiting worker
+        reconstructs the first one; the others are queued right after it as
+        per-slice jobs (the same jobs the tree's "Select slices…" creates).
+        """
+        chosen = _ask_slices(self, n_slices)
+        if not chosen:
+            chosen = [n_slices // 2]
+            self._log_msg(f"  No slice chosen — using middle slice {chosen[0]}")
         else:
-            self._log_msg(f"  Slice {idx} selected")
-        if hasattr(self, "_active_worker") and self._active_worker is not None:
-            self._active_worker.set_slice_choice(idx)
+            self._log_msg(f"  Slice(s) selected: {', '.join(map(str, chosen))}")
+
+        worker = getattr(self, "_active_worker", None)
+        if worker is None:
+            return
+        # Tag the running job with its slice so its tab label names the slice
+        # (the worker builds the label from this dict when it finishes).
+        job = worker._job
+        job["slice_idx"], job["n_slices"] = chosen[0], n_slices
+        self._current_job_label = _make_label(job)
+        extra = [dict(job, slice_idx=k) for k in chosen[1:]]
+        if extra:
+            self._job_queue[0:0] = extra
+            self._jobs_total += len(extra)
+            self._log_msg(f"  Queued {len(extra)} more slice job(s) for this scan.")
+        worker.set_slice_choice(chosen[0])
 
     def _on_mask_fallback_needed(self) -> None:
         """Main-thread slot: ask the user which mask to build when no JSON trajectory is found."""

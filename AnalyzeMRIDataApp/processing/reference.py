@@ -105,7 +105,8 @@ def load_reference_rss(
     exp = int(expected_nx) if expected_nx is not None else ref_raw.shape[0]
     try:
         ref_raw = crop_readout_oversampling(
-            ref_raw, expected_nx=exp, readout_axis=2, log_fn=log
+            ref_raw, expected_nx=exp, readout_axis=2, log_fn=log,
+            dat_path=reference_dat_path,
         )
     except Exception as exc:                       # exotic OS factor → no crop
         log(f"  [WARN] reference OS crop skipped ({exc}).")

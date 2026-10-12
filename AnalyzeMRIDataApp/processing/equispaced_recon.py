@@ -299,7 +299,8 @@ def reconstruct_equispaced(
         n_phase = _ref_raw_cache.shape[0]
         # Crop readout OS from reference so sizes stay consistent with main data.
         _ref_raw_cache = crop_readout_oversampling(
-            _ref_raw_cache, expected_nx=n_phase, readout_axis=2, log_fn=log
+            _ref_raw_cache, expected_nx=n_phase, readout_axis=2, log_fn=log,
+            dat_path=reference_dat_path,
         )
         log(f"  n_phase={n_phase} from reference (raw readout={_n_readout_raw})")
     else:
@@ -307,7 +308,8 @@ def reconstruct_equispaced(
 
     # Crop readout oversampling from main k-space.
     kspace_raw = crop_readout_oversampling(
-        kspace_raw, expected_nx=n_phase, readout_axis=2, log_fn=log
+        kspace_raw, expected_nx=n_phase, readout_axis=2, log_fn=log,
+        dat_path=dat_path,
     )
     n_acq, n_coils, n_readout = kspace_raw.shape
 
@@ -518,7 +520,8 @@ def reconstruct_equispaced(
                 # calibration data, leaving the undersampling un-resolved.
                 if _ref_slc.shape[2] != n_readout:
                     _ref_slc = crop_readout_oversampling(
-                        _ref_slc, expected_nx=n_readout, readout_axis=2, log_fn=log
+                        _ref_slc, expected_nx=n_readout, readout_axis=2, log_fn=log,
+                        dat_path=dat_path,
                     )
 
                 _ref_e = np.sum(np.abs(_ref_slc) ** 2, axis=(1, 2))
@@ -798,7 +801,8 @@ def reconstruct_equispaced(
                 _ref_sl = _refscan_sl if _refscan_sl is not None else ref_raw.shape[0] // 2
                 ref_raw = ref_raw[_ref_sl]
             ref_raw = crop_readout_oversampling(
-                ref_raw, expected_nx=n_phase, readout_axis=2, log_fn=log
+                ref_raw, expected_nx=n_phase, readout_axis=2, log_fn=log,
+                dat_path=reference_dat_path,
             )
         # Un-scramble the reference too when it is a fully-sampled TSE scan,
         # otherwise the comparison target is echo-scrambled and RMSE/PSNR/SSIM

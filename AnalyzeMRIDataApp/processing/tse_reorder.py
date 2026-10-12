@@ -79,7 +79,17 @@ def detect_tse_params(
     -------
     dict {"necho", "TE1", "TEeff"}  when the scan is TSE (necho > 1),
     otherwise None (SE / non-TSE → caller skips the reorder).
+
+    Siemens (non-Pulseq) sequences always return None, even when `tse` is
+    forced on: they label every line with its true phase-encode index, so the
+    reader already returns ascending PE order and re-ordering would scramble it.
     """
+    from .utils import sequence_family
+    if sequence_family(filename) == "siemens":
+        _logger.info("%s: Siemens sequence — line counter is authoritative, "
+                     "no TSE re-ordering.", Path(filename).name)
+        return None
+
     stem = Path(filename).stem
     use_tse = is_tse(filename) if tse is None else bool(tse)
 

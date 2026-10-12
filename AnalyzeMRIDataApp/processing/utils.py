@@ -4,6 +4,7 @@ BART only runs on Linux/WSL. On native Windows, run_bart() bridges calls into
 WSL and translates Windows paths to /mnt/<drive>/... (see _bart_command).
 """
 
+import functools
 import json
 import logging as _logging
 import os
@@ -70,23 +71,71 @@ def extract_band_index(filename: str) -> Optional[int]:
     return int(m.group(1)) if m else None
 
 
+def read_twix_header(dat_path: str) -> Optional[dict]:
+    """
+    Protocol header of the last measurement in a TWIX file, or None if unreadable.
+
+    Parses just the ASCII protocol (``parse_data=False``, ~0.1–0.3 s) and is
+    cached per (path, modification time, size), so every caller shares one read.
+    Treat the returned dict as read-only.
+    """
+    try:
+        st = os.stat(dat_path)
+    except OSError:
+        return None
+    return _read_twix_header_cached(str(dat_path), st.st_mtime_ns, st.st_size)
+
+
+@functools.lru_cache(maxsize=64)
+def _read_twix_header_cached(dat_path: str, _mtime_ns: int, _size: int) -> Optional[dict]:
+    try:
+        import twixtools
+        meas = twixtools.read_twix(
+            dat_path, parse_data=False, parse_pmu=False,
+            parse_geometry=False, verbose=False,
+        )
+        return meas[-1]["hdr"]
+    except Exception:
+        return None
+
+
+def sequence_family(dat_path: str) -> Optional[str]:
+    """
+    Which kind of sequence produced a TWIX file: "pulseq", "siemens", or None.
+
+    Decided from the sequence program that ran (``Config.SequenceFileName``,
+    e.g. ``%CustomerSeq%\\pulseq`` vs ``%SiemensSeq%\\tse``). Pulseq protocol
+    parameters (TR, matrix, oversampling, ...) are interpreter placeholders,
+    but this field is always true. "siemens" covers every non-Pulseq sequence:
+    those label each line with its true phase-encode index. None when the
+    header cannot be read (callers keep their previous behaviour).
+    """
+    hdr = read_twix_header(dat_path)
+    if hdr is None:
+        return None
+    for section, key in (("Config", "SequenceFileName"),
+                         ("Dicom", "tSequenceFileName"),
+                         ("Meas", "tSequenceFileName")):
+        try:
+            name = str(hdr[section][key])
+        except (KeyError, TypeError):
+            continue
+        if name:
+            return "pulseq" if "pulseq" in name.lower() else "siemens"
+    return None
+
+
 def probe_num_slices(dat_path: str) -> int:
     """
     Number of slices in a TWIX file, read cheaply from the protocol header only.
 
-    Uses ``twixtools.read_twix(..., parse_data=False)`` — this parses just the
-    ASCII protocol (~0.3 s) and skips the slow per-ADC decode, so it is fast
-    enough to call on demand from the UI. The slice count is
-    ``sSliceArray.lSize`` (equivalently ``lSliceArraySize``). Returns 1 when the
-    header has no slice field or on any error.
+    The slice count is ``sSliceArray.lSize`` (equivalently ``lSliceArraySize``).
+    Returns 1 when the header has no slice field or cannot be read.
     """
     try:
-        import twixtools
-        meas = twixtools.read_twix(
-            str(dat_path), parse_data=False, parse_pmu=False,
-            parse_geometry=False, verbose=False,
-        )
-        hdr = meas[-1]["hdr"]
+        hdr = read_twix_header(dat_path)
+        if hdr is None:
+            return 1
         # Preferred: nested MeasYaps → sSliceArray.lSize
         n = (hdr.get("MeasYaps", {}) or {}).get("sSliceArray", {}).get("lSize")
         if not n:
@@ -393,6 +442,28 @@ _os_logger = _logging.getLogger(__name__)
 # Readout oversampling helpers
 # ─────────────────────────────────────────────────────────────────────────────
 
+def readout_os_factor_from_header(dat_path: str) -> Optional[int]:
+    """
+    Readout oversampling factor recorded in a TWIX header (1 or 2), or None.
+
+    Siemens sequences store it as ``flReadoutOSFactor``. Pulseq headers always
+    carry the interpreter's placeholder (1.0) whatever the .seq actually
+    sampled — e.g. 640 samples for a 320 matrix — so for Pulseq this returns
+    None and the caller falls back to inferring the factor from the data.
+    """
+    if sequence_family(dat_path) != "siemens":
+        return None
+    hdr = read_twix_header(dat_path)
+    for section in ("Meas", "Dicom"):
+        try:
+            factor = float(hdr[section]["flReadoutOSFactor"])
+        except Exception:
+            continue
+        if factor in (1.0, 2.0):
+            return int(factor)
+    return None
+
+
 def crop_readout_oversampling(
     kspace: np.ndarray,
     expected_nx: int,
@@ -400,6 +471,7 @@ def crop_readout_oversampling(
     os_factor: Optional[int] = None,
     strict: bool = False,
     log_fn: Optional[Callable[[str], None]] = None,
+    dat_path: Optional[str] = None,
 ) -> np.ndarray:
     """
     Crop readout oversampling from a raw k-space array.
@@ -410,10 +482,12 @@ def crop_readout_oversampling(
         Raw k-space; shape is typically (Nacq, Ncoils, Nreadout).
     expected_nx : int
         Expected readout size after cropping (= the prescribed matrix Nx).
+        Only used to guess the OS factor when the TWIX header cannot.
     readout_axis : int
         Array axis that corresponds to the readout dimension.
     os_factor : int or None
-        Oversampling factor.  ``None`` (default) → auto-detect via
+        Oversampling factor.  ``None`` (default) → read it from the TWIX
+        header of ``dat_path``; if unavailable, auto-detect via
         ``round(actual_nread / expected_nx)``.  Only 1 (no-op) and 2
         (central-half crop) are supported.
     strict : bool
@@ -423,14 +497,28 @@ def crop_readout_oversampling(
     log_fn : callable(str) or None
         Progress-callback used by the calling recon module.  When provided,
         OS decisions are reported through it *and* the module logger.
+    dat_path : str or None
+        TWIX file the array was read from. Its header gives the true OS
+        factor; guessing from ``expected_nx`` (usually the PE line count)
+        fails on non-square, partial-Fourier or phase-oversampled scans
+        (e.g. readout 768 vs 235 PE lines → "factor 3").
 
     Returns
     -------
     kspace_cropped : np.ndarray  (same dtype and number of dims)
     """
     actual_nread = kspace.shape[readout_axis]
+    source = "caller"
+    if os_factor is None and dat_path is not None:
+        hdr_factor = readout_os_factor_from_header(str(dat_path))
+        # A header claiming 2x on an odd-length readout cannot be right.
+        if hdr_factor == 2 and actual_nread % 2:
+            hdr_factor = None
+        if hdr_factor is not None:
+            os_factor, source = hdr_factor, "TWIX header"
     if os_factor is None:
         os_factor = round(actual_nread / expected_nx)
+        source = f"expected_nx={expected_nx}"
 
     def _emit(msg: str) -> None:
         _os_logger.info(msg)
@@ -438,10 +526,7 @@ def crop_readout_oversampling(
             log_fn(msg)
 
     if os_factor == 1:
-        _emit(
-            f"[OS] readout={actual_nread} == expected_nx={expected_nx}, "
-            f"OS factor=1 — no crop."
-        )
+        _emit(f"[OS] readout={actual_nread}, OS factor=1 (from {source}) — no crop.")
         return kspace
 
     if os_factor == 2:
@@ -481,7 +566,7 @@ def crop_readout_oversampling(
         ).astype(kspace.dtype, copy=False)
         _emit(
             f"[OS] readout {actual_nread} → {cropped_nx} "
-            f"(OS factor={os_factor} detected via expected_nx={expected_nx}, "
+            f"(OS factor={os_factor} from {source}, "
             f"axis={readout_axis}, image-domain crop)."
         )
         return result
