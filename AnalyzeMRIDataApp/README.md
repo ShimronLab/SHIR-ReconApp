@@ -615,9 +615,13 @@ TWIX reader, so no scanner data is required for the bulk of the suite.
   the scanner also applies filters, 2-D distortion correction, prescan normalise and
   interpolation, which SHIR does not.
 - **Pulseq scans** keep the legacy geometry (filename + line count + trajectory JSON); the
-  played `.seq` is only cross-checked. The cross-check currently reports a **reversed
-  phase-encode direction** for `swapPE` scans (mirrored image, one-line shift) — reference
-  auto-orientation compensates in the metrics.
+  played `.seq` is only cross-checked (`tools/seq_parity.py`). On the lab's scans the newer
+  sequences match exactly; the older SE ("band") sequences and the `swapPE` scans are placed
+  with the phase-encode direction **reversed** (a mirrored image; recon and reference are
+  mirrored alike, and reference auto-orientation handles mixed pairs); some sequences sample
+  ky on a half-line grid or one line shifted, which leaves magnitude images unchanged. A TSE
+  whose echo order the legacy path cannot infer (e.g. 266 readouts, not a multiple of the
+  echo-train length) is reconstructed scrambled even though its `.seq` gives the exact order.
 - **ESPIRiT thresholds differ between engines:** BART `ecalib` uses `-t 0.001`, sigpy
   `EspiritCalib` uses `thresh 0.02` (each library's default, now passed explicitly). This is one
   source of the small BART/sigpy differences.

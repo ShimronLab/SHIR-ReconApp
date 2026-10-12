@@ -117,12 +117,16 @@ def main() -> int:
                 verdict = f"LINE COUNT .seq {seq_rows.size} vs legacy {rows.size}"
             elif np.array_equal(seq_rows, rows):
                 verdict = "MATCH"
+            elif np.unique(seq_rows - rows).size == 1:
+                verdict = f"SHIFTED {int((seq_rows - rows)[0]):+d} line(s) (linear phase only)"
             elif shift is not None and np.unique(shift).size == 1:
                 verdict = (f"REVERSED PE DIRECTION (mirror image, {int(shift[0]):+d}-line shift)")
             elif np.array_equal(np.sort(seq_rows), np.sort(rows)):
                 verdict = "SAME LINES, DIFFERENT ORDER"
             else:
                 verdict = f"{int(np.sum(seq_rows != rows))}/{rows.size} LINES DIFFER"
+            if geo.get("pe_half_line"):
+                verdict += " + HALF-LINE ky GRID (no k=0 line)"
             os_ok = (legacy_os is not None and geo["readout_os"] is not None
                      and round(geo["readout_os"]) == legacy_os)
             row.update(verdict=verdict, n_phase_legacy=n_phase, n_pe_full_seq=geo["n_pe_full"],

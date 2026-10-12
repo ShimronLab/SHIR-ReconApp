@@ -67,6 +67,7 @@ def test_library_folder_is_searched(pulseq_scan, tmp_path):
     (np.arange(8), "matches the played .seq exactly"),
     (7 - np.arange(8) - 1 + 1, "REVERSED phase-encode direction"),
     (np.roll(np.arange(8), 1), "same lines, different ORDER"),
+    (np.arange(8) - 1, "shifted by +1 line(s)"),
     (np.arange(7), "line count differs"),
 ])
 def test_compare_with_legacy_verdicts(monkeypatch, legacy, verdict):
@@ -77,6 +78,45 @@ def test_compare_with_legacy_verdicts(monkeypatch, legacy, verdict):
     logs = []
     out = sg.compare_with_legacy("scan.dat", legacy, 8, logs.append)
     assert verdict in out and logs and logs[0].startswith("  [SEQ]")
+
+
+class _FakeSeq:
+    """Just enough of pypulseq.Sequence for seq_line_geometry: Cartesian lines
+    at the given phase-encode k values (in units of Δk), 8 samples each."""
+    def __init__(self, pe_units, d=4.0):
+        self._pe = np.asarray(pe_units, float) * d
+        self.block_events = list(range(len(self._pe)))
+
+    def read(self, _path):
+        pass
+
+    def calculate_kspace(self):
+        kx = np.tile(np.arange(-4, 4) * 2.0, len(self._pe))
+        ky = np.repeat(self._pe, 8)
+        return (np.stack([kx, ky, np.zeros_like(kx)]),)
+
+    def get_block(self, _b):
+        class _B:
+            class adc:
+                num_samples = 8
+        return _B
+
+
+@pytest.mark.parametrize("pe_units,half,expected", [
+    (np.arange(-4, 4), False, np.arange(-4, 4)),                     # k = 0 sampled
+    (np.arange(3.5, -4, -1), True, np.arange(3, -5, -1)),            # ±½…±3½, top-down
+])
+def test_seq_line_geometry_integer_and_half_line_grids(monkeypatch, pe_units, half, expected):
+    import sys, types
+    fake = types.SimpleNamespace(Sequence=lambda: _FakeSeq(pe_units))
+    monkeypatch.setitem(sys.modules, "pypulseq", fake)
+    monkeypatch.setattr(sg, "seq_signature", lambda _p: SIG)
+    sg.seq_line_geometry.cache_clear()
+    geo = sg.seq_line_geometry("x.seq")
+    sg.seq_line_geometry.cache_clear()
+    assert geo["pe_half_line"] is half
+    np.testing.assert_array_equal(geo["pe_index"], expected)
+    assert geo["n_pe_full"] == 8
 
 
 def test_shadow_check_never_raises(monkeypatch):

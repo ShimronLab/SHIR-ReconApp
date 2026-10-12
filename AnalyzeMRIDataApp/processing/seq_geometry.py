@@ -132,11 +132,20 @@ def seq_line_geometry(seq_path: str) -> Dict[str, Any]:
     else:
         raise ValueError("Neither k axis is constant within an ADC — not Cartesian.")
     pe_values = np.unique(np.round(pe_k, 6))
-    d_pe = float(np.min(np.diff(pe_values))) if pe_values.size > 1 else 1.0
+    steps = np.diff(pe_values)
+    d_pe = float(steps.min()) if steps.size else 1.0
+    if steps.size:                                     # average the one-line steps
+        d_pe = float(steps[steps < 1.1 * d_pe].mean())  # (gradient rounding jitters them)
     d_read = float(np.median(np.abs(np.diff(read_k[0]))))
-    pe_index = np.round(pe_k / d_pe).astype(int)
+    # Lines sit either on k = j·Δk (k = 0 sampled) or on a half-line grid
+    # k = (j + ½)·Δk, symmetric about k = 0 (no k = 0 line); on the half-line
+    # grid, line j is the one just above k = 0's row, i.e. floor(k / Δk).
+    pos = pe_k / d_pe
+    half_line = bool(pos.size and np.all(np.abs(pos - np.floor(pos) - 0.5) < 0.1))
+    pe_index = (np.floor(pos) if half_line else np.round(pos)).astype(int)
     return {
         "pe_index": pe_index,                          # per ADC, acquisition order
+        "pe_half_line": half_line,                     # k grid offset by ½ line
         "n_adc": n_adc,
         "samples_per_adc": n_samp,
         "readout_os": d_pe / d_read if d_read else None,
@@ -185,6 +194,9 @@ def compare_with_legacy(dat_path: str, legacy_rows: np.ndarray, n_phase: int,
         verdict = (f"line count differs (.seq {seq_rows.size} vs placed {legacy_rows.size})")
     elif np.array_equal(seq_rows, legacy_rows):
         verdict = "matches the played .seq exactly"
+    elif np.unique(seq_rows - legacy_rows).size == 1:
+        verdict = (f"shifted by {int((seq_rows - legacy_rows)[0]):+d} line(s) vs the played .seq "
+                   "(a linear phase; magnitude unaffected)")
     elif np.unique(seq_rows - (n_phase - 1 - legacy_rows)).size == 1:
         verdict = ("REVERSED phase-encode direction vs the played .seq "
                    "(image mirrored along phase encode)")
@@ -193,6 +205,8 @@ def compare_with_legacy(dat_path: str, legacy_rows: np.ndarray, n_phase: int,
     else:
         n_diff = int(np.sum(seq_rows != legacy_rows))
         verdict = f"{n_diff}/{seq_rows.size} lines placed differently than the played .seq"
+    if geo.get("pe_half_line"):
+        verdict += "; the .seq samples ky half a line off k = 0 (magnitude unaffected)"
     if log:
         log(f"  [SEQ] {Path(info['path']).name}: line placement {verdict} "
             f"(readout OS {geo['readout_os']:.2f}, FOV {geo['fov_phase_mm']:.0f} mm).")
