@@ -4,11 +4,16 @@ Fully-sampled reference reconstruction.
 Two combination modes (selected at call time via *use_sense*):
 
   RSS  (default):
-    read_raw_twix_data → permute (Nread, Nphase, Ncoils) → centred IFFT2 → RSS
+    read k-space (Nread, Nphase, Ncoils) → centred IFFT2 → RSS
 
   ESPIRiT + SENSE:
-    … same read/permute … → normalise k-space → BART ecalib → BART pics -S
+    … same read … → normalise k-space → BART ecalib → BART pics -S
     Returns the SENSE-combined image plus the sensitivity maps.
+
+Siemens files are read through processing.acquisition: lines sit on the
+protocol's full phase-encode grid (partial-Fourier lines stay zero or are
+filled by `pf_method`), and images are cropped to the prescribed field of
+view. Pulseq files keep the original read path.
 """
 
 import os
@@ -36,6 +41,7 @@ def reconstruct_fullysamp(
     teeff: Optional[float] = None,
     progress_cb: Optional[Callable[[str], None]] = None,
     slice_selector_cb: Optional[Callable[[int], int]] = None,
+    pf_method: str = "zerofill",
 ) -> Dict[str, Any]:
     """
     Reconstruct a fully-sampled 2-D Cartesian scan.
@@ -52,6 +58,9 @@ def reconstruct_fullysamp(
         ``use_sense=True``).  Default 24.
     progress_cb : callable(str), optional
         Status callback.
+    pf_method : str, optional
+        Partial-Fourier fill for RSS ("zerofill", "homodyne", "pocs"); SENSE
+        treats partial-Fourier lines as unsampled instead.
 
     Returns
     -------
@@ -71,11 +80,95 @@ def reconstruct_fullysamp(
         if progress_cb:
             progress_cb(msg)
 
+    from .acquisition import acquire_cartesian, finalize_image, result_extras
+    from .partial_fourier import describe, pf_fill
+
+    log(f"Reading TWIX data: {Path(dat_path).name}")
+    asm = acquire_cartesian(dat_path, slice_selector_cb=slice_selector_cb, log=log)
+    if asm is None:                                     # Pulseq / unreadable header
+        kspace_3d, _tse = _read_legacy(dat_path, expected_nx, tse, necho, te1, teeff,
+                                       slice_selector_cb, log)
+        measured = kspace_3d
+    else:
+        _tse = None
+        measured = asm.kspace
+        kspace_3d = pf_fill(measured, asm.line_category, pf_method)
+        log(f"  Full-grid k-space (read, phase, coils): {kspace_3d.shape}")
+
+    log("Reconstructing image via centred IFFT2 + RSS…")
+    images    = _ifft2c(kspace_3d)                                # (Nr, Np, Nc)
+    image_rss = finalize_image(np.sqrt(np.sum(np.abs(images) ** 2, axis=2)), asm)
+    del images   # per-coil images not needed beyond RSS
+    log(f"  Image shape: {image_rss.shape}")
+
+    # Pre-compute 2-D RSS k-space magnitude for display (saves storing 3-D
+    # complex array); it shows what was measured, never-acquired lines as zeros.
+    kspace_rss = np.sqrt(np.sum(np.abs(measured) ** 2, axis=2)).astype(np.float32)
+    del kspace_3d
+
+    sens_maps     = None
+    image_combined = image_rss   # default fallback
+
+    if use_sense:
+        from .recon_backend import active_backend_label, espirit_maps, pics
+
+        log(f"Running ESPIRiT + SENSE combination ({active_backend_label()})…")
+        try:
+            # BART layout: (Nread, Nphase, 1, Ncoils). SENSE sees the measured
+            # k-space, so partial-Fourier lines count as unsampled.
+            k4d = measured[:, :, np.newaxis, :].astype(np.complex64)
+            del measured   # free the complex128 array now that k4d is built
+
+            # Normalise k-space so ecalib is numerically stable
+            k4d_norm, _ = espirit_normalise(k4d, style="add")
+
+            calib = calib_width
+            if asm is not None:   # calibrate only inside the symmetric measured region
+                calib = min(calib_width, asm.calib_range[1] - asm.calib_range[0])
+            log(f"  Computing sensitivity maps (ESPIRiT, calib={calib})…")
+            sens_maps = espirit_maps(k4d_norm, calib, num_maps=1,
+                                     crop=espirit_crop, log=log)
+
+            log("  Running PICS (SENSE coil combination)…")
+            combined_raw   = pics(k4d_norm, sens_maps, soft_sense=True, log=log)
+            image_combined = finalize_image(np.abs(np.squeeze(combined_raw)), asm)
+            sens_maps      = finalize_image(sens_maps, asm)
+        except (RuntimeError, ImportError) as exc:
+            log(f"  SENSE failed ({exc}); falling back to RSS")
+            sens_maps      = None
+            image_combined = image_rss
+
+    log("Fully-sampled reconstruction complete.")
+    # NOTE: kspace_3d and images omitted from result to reduce memory;
+    # kspace_rss (2-D float32) is stored instead for the k-space display panel.
+    result = {
+        "kspace_rss":     kspace_rss,
+        "image_rss":      image_rss,
+        "image_combined": image_combined,
+        "sens_maps":      sens_maps,
+        "combination":    "sense" if use_sense else "rss",
+        "params": {
+            "use_sense":   use_sense,
+            "calib_width": calib_width,
+            "tse":         _tse,
+        },
+    }
+    if asm is not None:
+        result.update(result_extras(asm))
+        result["pf_method"] = (describe("model (PICS)", asm.line_category) if use_sense
+                               else describe(pf_method, asm.line_category))
+    return result
+
+
+def _read_legacy(dat_path, expected_nx, tse, necho, te1, teeff, slice_selector_cb, log):
+    """
+    Original read path (Pulseq and unreadable headers): the stored lines are
+    the phase-encode grid. Returns ((Nread, Nphase, Ncoils) complex128, tse params).
+    """
     _add_twix_path()
     from read_siemens_scans.twix_reading import read_raw_twix_data
     from .utils import crop_readout_oversampling, select_slice
 
-    log(f"Reading TWIX data: {Path(dat_path).name}")
     kspace_raw, _ = read_raw_twix_data(str(dat_path), fix_oversampling=False)
     log(f"  Raw shape: {kspace_raw.shape}")
 
@@ -109,61 +202,5 @@ def reconstruct_fullysamp(
         )
 
     kspace_3d = np.transpose(kspace_raw, (2, 0, 1)).astype(np.complex128)
-    del kspace_raw   # free raw TWIX buffer immediately
-    # (Nreadout, Nphase, Ncoils)
-    log(f"  Rearranged shape: {kspace_3d.shape}")
-
-    log("Reconstructing image via centred IFFT2 + RSS…")
-    images    = _ifft2c(kspace_3d)                                # (Nr, Np, Nc)
-    image_rss = np.sqrt(np.sum(np.abs(images) ** 2, axis=2))     # (Nr, Np)
-    del images   # per-coil images not needed beyond RSS
-    log(f"  Image shape: {image_rss.shape}")
-
-    # Pre-compute 2-D RSS k-space magnitude for display (saves storing 3-D complex array)
-    kspace_rss = np.sqrt(np.sum(np.abs(kspace_3d) ** 2, axis=2)).astype(np.float32)
-
-    sens_maps     = None
-    image_combined = image_rss   # default fallback
-
-    if use_sense:
-        from .recon_backend import active_backend_label, espirit_maps, pics
-
-        log(f"Running ESPIRiT + SENSE combination ({active_backend_label()})…")
-        try:
-            # BART layout: (Nread, Nphase, 1, Ncoils)
-            k4d = kspace_3d[:, :, np.newaxis, :].astype(np.complex64)
-            del kspace_3d   # free the complex128 array now that k4d is built
-
-            # Normalise k-space so ecalib is numerically stable
-            k4d_norm, _ = espirit_normalise(k4d, style="add")
-
-            log(f"  Computing sensitivity maps (ESPIRiT, calib={calib_width})…")
-            sens_maps = espirit_maps(k4d_norm, calib_width, num_maps=1,
-                                     crop=espirit_crop, log=log)
-
-            log("  Running PICS (SENSE coil combination)…")
-            combined_raw   = pics(k4d_norm, sens_maps, soft_sense=True, log=log)
-            image_combined = np.abs(np.squeeze(combined_raw))   # (Nread, Nphase)
-        except (RuntimeError, ImportError) as exc:
-            log(f"  SENSE failed ({exc}); falling back to RSS")
-            sens_maps      = None
-            image_combined = image_rss
-
-    else:
-        del kspace_3d   # not needed in RSS-only path
-
-    log("Fully-sampled reconstruction complete.")
-    # NOTE: kspace_3d and images omitted from result to reduce memory;
-    # kspace_rss (2-D float32) is stored instead for the k-space display panel.
-    return {
-        "kspace_rss":     kspace_rss,
-        "image_rss":      image_rss,
-        "image_combined": image_combined,
-        "sens_maps":      sens_maps,
-        "combination":    "sense" if use_sense else "rss",
-        "params": {
-            "use_sense":   use_sense,
-            "calib_width": calib_width,
-            "tse":         _tse,
-        },
-    }
+    log(f"  Rearranged shape: {kspace_3d.shape}")   # (Nreadout, Nphase, Ncoils)
+    return kspace_3d, _tse

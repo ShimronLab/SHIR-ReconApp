@@ -52,6 +52,7 @@ def load_reference_rss(
     teeff: Optional[float] = None,
     combine: str = "rss",
     calib_width: int = 24,
+    pf_method: str = "zerofill",
     log: Optional[Callable[[str], None]] = None,
 ) -> np.ndarray:
     """
@@ -65,9 +66,11 @@ def load_reference_rss(
     ESPIRiT is unavailable.
 
     Multi-slice (4-D) references pick ``slice_idx`` (or the middle slice).
-    Readout oversampling is cropped (best-effort — skipped, not fatal, on an
-    exotic factor). A fully-sampled TSE reference is echo-un-scrambled so the
-    comparison target is not scrambled.
+    Siemens references are assembled on their full grid (partial-Fourier lines
+    filled by ``pf_method``) and cropped to the prescribed field of view. For
+    other files, readout oversampling is cropped (best-effort — skipped, not
+    fatal, on an exotic factor) and a fully-sampled TSE reference is
+    echo-un-scrambled so the comparison target is not scrambled.
     """
     log = log or _noop
 
@@ -78,18 +81,26 @@ def load_reference_rss(
             expected_nx=expected_nx, tse=tse, necho=necho, te1=te1, teeff=teeff,
             slice_selector_cb=(None if slice_idx is None
                                else (lambda _n, _i=slice_idx: int(_i))),
-            progress_cb=log,
+            progress_cb=log, pf_method=pf_method,
         )
         _img = _res.get("image_combined")
         if _img is None:
             _img = _res.get("image_rss")
         return np.abs(np.squeeze(_img)).astype(np.float64)
 
+    from .acquisition import acquire_cartesian, finalize_image
+    from .partial_fourier import pf_fill
+
+    log(f"Loading reference: {Path(reference_dat_path).name}")
+    asm = acquire_cartesian(reference_dat_path, slice_idx=slice_idx, log=log)
+    if asm is not None:
+        k = pf_fill(asm.kspace, asm.line_category, pf_method)
+        return finalize_image(np.sqrt(np.sum(np.abs(_ifft2c(k)) ** 2, axis=2)), asm)
+
     _add_twix_path()
     from read_siemens_scans.twix_reading import read_raw_twix_data
     from .utils import crop_readout_oversampling
 
-    log(f"Loading reference: {Path(reference_dat_path).name}")
     ref_raw, _ = read_raw_twix_data(str(reference_dat_path), fix_oversampling=False)
     if ref_raw.ndim == 4:
         sl = ref_raw.shape[0] // 2 if slice_idx is None else int(slice_idx)
