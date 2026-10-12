@@ -60,10 +60,24 @@ def test_get_params_contract(main_window):
         "sim_acs_lines", "sim_power_decay", "sim_recon_method",
         "sim_kernel_size", "sim_grappa_lambda", "sim_sense_iters",
         "sim_sense_lambda", "sim_swap_pe_read", "save_dir", "gen_pdf",
-        "save_npy", "espirit_crop", "pf_method", "prewhiten",
+        "save_npy", "espirit_crop", "pf_method", "prewhiten", "seq_library_dir",
     }
     missing = required - set(p)
     assert not missing, f"get_params() lost keys: {missing}"
+
+
+def test_seq_library_setting_persists(qtbot, tmp_path):
+    from PyQt5.QtCore import QSettings
+    from ui.params_panel import ParamsPanel
+    settings = QSettings(str(tmp_path / "s.ini"), QSettings.IniFormat)
+    first = ParamsPanel()
+    qtbot.addWidget(first)
+    first.edit_seq_library.setText(str(tmp_path))
+    first.save_persistent(settings)
+    second = ParamsPanel()
+    qtbot.addWidget(second)
+    second.load_persistent(settings)
+    assert second.get_params()["seq_library_dir"] == str(tmp_path)
 
 
 def test_tab_close_removes_result(main_window, monkeypatch):

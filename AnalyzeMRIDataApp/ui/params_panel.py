@@ -243,6 +243,29 @@ class ParamsPanel(QWidget):
 
         vbox.addWidget(grp_tse)
 
+        # ── Pulseq scans: where the played .seq files are kept ────────────────
+        grp_seq = QGroupBox("Pulseq scans")
+        form_seq = QFormLayout(grp_seq)
+        seq_row = QWidget()
+        seq_layout = QHBoxLayout(seq_row)
+        seq_layout.setContentsMargins(0, 0, 0, 0)
+        self.edit_seq_library = QLineEdit()
+        self.edit_seq_library.setPlaceholderText("(optional)")
+        self.edit_seq_library.setToolTip(
+            "Folder (searched with its sub-folders) holding the lab's .seq files.\n"
+            "A Pulseq scan's header names the .seq that was played and its signature;\n"
+            "the exact file is looked up by signature next to the scan, in seq_files/\n"
+            "or *_seq/ folders, and then here. It is used to cross-check the line\n"
+            "placement (a [SEQ] line in the log); the reconstruction is unchanged."
+        )
+        btn_seq = QPushButton("…")
+        btn_seq.setFixedWidth(28)
+        btn_seq.clicked.connect(self._browse_seq_library)
+        seq_layout.addWidget(self.edit_seq_library)
+        seq_layout.addWidget(btn_seq)
+        form_seq.addRow(".seq library:", seq_row)
+        vbox.addWidget(grp_seq)
+
         # ── Equispaced ────────────────────────────────────────────────────────
         grp_grappa = QGroupBox("Equispaced Reconstruction")
         form_grappa = QFormLayout(grp_grappa)
@@ -672,6 +695,11 @@ class ParamsPanel(QWidget):
         if folder:
             self.edit_save_dir.setText(folder)
 
+    def _browse_seq_library(self) -> None:
+        folder = QFileDialog.getExistingDirectory(self, "Select the .seq library folder")
+        if folder:
+            self.edit_seq_library.setText(folder)
+
     # ─── Settings persistence ─────────────────────────────────────────────────
 
     def load_persistent(self, settings) -> None:
@@ -685,12 +713,14 @@ class ParamsPanel(QWidget):
         idx = self.combo_backend.findData(engine)
         if idx >= 0:
             self.combo_backend.setCurrentIndex(idx)
+        self.edit_seq_library.setText(settings.value("pulseq/seq_library_dir", "", str))
 
     def save_persistent(self, settings) -> None:
         settings.setValue("output/save_dir", self.edit_save_dir.text())
         settings.setValue("output/gen_pdf", self.chk_pdf.isChecked())
         settings.setValue("output/save_npy", self.chk_npy.isChecked())
         settings.setValue("common/recon_backend", self.combo_backend.currentData())
+        settings.setValue("pulseq/seq_library_dir", self.edit_seq_library.text())
 
     # ─── Public API ───────────────────────────────────────────────────────────
 
@@ -725,6 +755,7 @@ class ParamsPanel(QWidget):
             "tse_necho": None if self.chk_tse_auto.isChecked() else self.spin_tse_necho.value(),
             "tse_te1":   None if self.chk_tse_auto.isChecked() else self.dspin_tse_te1.value() * 1e-3,
             "tse_teeff": None if self.chk_tse_auto.isChecked() else self.dspin_tse_teeff.value() * 1e-3,
+            "seq_library_dir": self.edit_seq_library.text().strip(),
             # poisson
             "poisson_mode": self.combo_poisson_mode.currentData(),
             "lambda_wav":   self.dspin_lambda.value(),

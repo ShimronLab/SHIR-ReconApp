@@ -270,7 +270,8 @@ after the scan) is never used. Searched, in order:
 
 1. the `.dat` folder and its parent;
 2. `seq_files/` or any `*_seq/` folder in the `.dat` folder, its parent or grandparent;
-3. a library folder (`seq_geometry.set_library_dir`).
+3. the **.seq library** folder set in the *Pulseq scans* parameter group (searched with its
+   sub-folders; remembered between sessions).
 
 With `pypulseq` installed, the `.seq` gives every readout's phase-encode index, the readout
 oversampling and the FOV. **This is shadow mode:** the legacy line placement is still used, and
@@ -426,6 +427,7 @@ Outputs (per result tab — 3 × 3 grid):
 | Common | **Recon engine** | Auto | all BART/sigpy methods | Auto (BART if available, else sigpy) / Force BART / Force sigpy |
 | Siemens scans | Partial-Fourier lines | Zero-fill | all Cartesian (Siemens product) | Zero-fill / Homodyne / POCS for lines a partial-Fourier protocol never acquired. No effect on Pulseq scans |
 | Siemens scans | Noise prewhitening | On | all Cartesian (Siemens product) | Decorrelate coils with the file's noise-adjust scan before coil processing |
+| Pulseq scans | .seq library | — | Pulseq scans | Extra folder searched for the played `.seq` (cross-check only; the recon is unchanged) |
 | Fully Sampled | Combination mode | RSS | Fully-Sampled | RSS (fast) or ESPIRiT + SENSE coil combination |
 | Equispaced Recon | Method | GRAPPA | Equispaced | GRAPPA / GRAPPA+SENSE / Pure SENSE / CS-SENSE / ESPIRiT / ESPIRiT +L1 / +L2 / +TV / +L1-Wav |
 | Equispaced Recon | Mask method | analytical | Equispaced | Build PE mask analytically (R/ACS) or from the data's sampling pattern |

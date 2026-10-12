@@ -318,6 +318,7 @@ either engine and always work. The log prints which engine ran for each job.
 | Common | **Recon engine** | all BART/sigpy methods | Auto / Force BART / Force sigpy |
 | Siemens scans | Partial-Fourier lines | Siemens product scans | Zero-fill (default) / Homodyne / POCS for lines a partial-Fourier protocol never acquired |
 | Siemens scans | Noise prewhitening | Siemens product scans | decorrelate coils with the file's noise scan (default on) |
+| Pulseq scans | .seq library | Pulseq scans | folder with the lab's `.seq` files, used to cross-check line placement (log only) |
 | Fully Sampled | Combination mode | Fully-Sampled | RSS or ESPIRiT + SENSE |
 | Equispaced | Method | Equispaced | GRAPPA … ESPIRiT ±L1/L2/TV |
 | Equispaced | Mask method | Equispaced | analytical or from-data pattern |
