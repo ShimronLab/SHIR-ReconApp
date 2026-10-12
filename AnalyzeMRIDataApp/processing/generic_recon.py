@@ -344,6 +344,7 @@ def reconstruct_generic(
     teeff: Optional[float] = None,
     progress_cb: Optional[Callable[[str], None]] = None,
     slice_selector_cb: Optional[Callable[[int], int]] = None,
+    pf_method: str = "zerofill",
 ) -> Dict[str, Any]:
     """
     Reconstruct a scan of unknown type; see module docstring for the modes.
@@ -440,6 +441,7 @@ def reconstruct_generic(
             dat_path, use_sense=False,
             tse=tse, necho=necho, te1=te1, teeff=teeff,
             progress_cb=progress_cb, slice_selector_cb=slice_selector_cb,
+            pf_method=pf_method,
         )
         result["recon_path"] = "cartesian"
         return result
@@ -453,6 +455,7 @@ def reconstruct_generic(
         result = reconstruct_fullysamp(
             dat_path, use_sense=False, tse=False,
             progress_cb=progress_cb, slice_selector_cb=slice_selector_cb,
+            pf_method=pf_method,
         )
         result["recon_path"] = "cartesian"
         return result

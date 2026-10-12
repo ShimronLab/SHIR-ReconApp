@@ -147,6 +147,28 @@ class ParamsPanel(QWidget):
 
         vbox.addWidget(grp_espirit)
 
+        # ── Partial Fourier (lines a Siemens protocol never acquired) ─────────
+        grp_pf = QGroupBox("Partial Fourier (Siemens scans)")
+        form_pf = QFormLayout(grp_pf)
+
+        self.combo_pf_method = QComboBox()
+        self.combo_pf_method.addItem("Zero-fill",          "zerofill")
+        self.combo_pf_method.addItem("Homodyne",           "homodyne")
+        self.combo_pf_method.addItem("POCS (iterative)",   "pocs")
+        self.combo_pf_method.setToolTip(
+            "How to treat the k-space lines a partial-Fourier protocol never "
+            "acquired (e.g. 7/8: 34 of 269 lines). Read from the scan header; "
+            "scans without partial Fourier are not affected.\n"
+            "Zero-fill leaves them empty (never invents data; slightly blurrier).\n"
+            "Homodyne and POCS fill them from the conjugate symmetry of k-space "
+            "using a low-resolution phase estimate (sharper; assume smooth phase).\n"
+            "Applies to RSS / GRAPPA recons and to the simulator's reference; "
+            "SENSE / CS recons treat the lines as unsampled instead."
+        )
+        form_pf.addRow("Missing lines:", self.combo_pf_method)
+
+        vbox.addWidget(grp_pf)
+
         # ── Fully Sampled ─────────────────────────────────────────────────────
         grp_fs = QGroupBox("Fully Sampled")
         form_fs = QFormLayout(grp_fs)
@@ -671,6 +693,7 @@ class ParamsPanel(QWidget):
             "traj_margin":  self.dspin_traj_margin.value(),
             "calib_width":  self.spin_calib.value(),
             "espirit_crop": self.dspin_espirit_crop.value(),   # both engines
+            "pf_method":    self.combo_pf_method.currentData(),   # zerofill | homodyne | pocs
             "recon_backend": self.combo_backend.currentData(),   # auto | bart | sigpy
             # equispaced
             "equi_method":       self.combo_equi_method.currentData(),

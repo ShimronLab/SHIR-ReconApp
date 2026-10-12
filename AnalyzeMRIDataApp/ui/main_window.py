@@ -198,6 +198,7 @@ class ReconWorker(QObject):
                 result = reconstruct_fullysamp(
                     dat_path    = job["dat_path"],
                     use_sense   = params.get("fullysamp_mode", "rss") == "sense",
+                    pf_method   = params.get("pf_method", "zerofill"),
                     calib_width = params.get("calib_width", 24),
                     espirit_crop = params.get("espirit_crop", 0.8),
                     tse         = params.get("tse"),
@@ -234,6 +235,7 @@ class ReconWorker(QObject):
                     progress_cb         = cb,
                     slice_selector_cb   = slice_cb,
                     mask_fallback_cb    = self._request_mask_fallback,
+                    pf_method           = params.get("pf_method", "zerofill"),
                 )
 
             elif stype == SCAN_POISSON:
@@ -274,6 +276,7 @@ class ReconWorker(QObject):
                     espirit_crop    = params.get("espirit_crop",    0.8),
                     swap_pe_read    = params.get("sim_swap_pe_read", False),
                     rng_seed        = params.get("sim_rng_seed"),
+                    pf_method       = params.get("pf_method", "zerofill"),
                     tse             = params.get("tse"),
                     necho           = params.get("tse_necho"),
                     te1             = params.get("tse_te1"),
@@ -292,6 +295,7 @@ class ReconWorker(QObject):
                     dat_path    = job["dat_path"],
                     json_path   = job.get("json_path"),
                     mode        = params.get("unknown_mode", "auto"),
+                    pf_method   = params.get("pf_method", "zerofill"),
                     grid_size   = params["grid_size"],
                     calib_width = params.get("calib_width", 24),
                     scan_fov_m  = params["scan_fov_m"],
