@@ -103,6 +103,10 @@ def reconstruct_fullysamp(
     # Pre-compute 2-D RSS k-space magnitude for display (saves storing 3-D
     # complex array); it shows what was measured, never-acquired lines as zeros.
     kspace_rss = np.sqrt(np.sum(np.abs(measured) ** 2, axis=2)).astype(np.float32)
+    # When homodyne / POCS filled never-acquired lines, keep that k-space too so
+    # the viewer can show "measured" vs "after reconstruction".
+    kspace_filled_rss = (np.sqrt(np.sum(np.abs(kspace_3d) ** 2, axis=2)).astype(np.float32)
+                         if kspace_3d is not measured else None)
     del kspace_3d
 
     sens_maps     = None
@@ -156,6 +160,8 @@ def reconstruct_fullysamp(
         result.update(result_extras(asm))
         result["pf_method"] = (describe("model (PICS)", asm.line_category) if use_sense
                                else describe(pf_method, asm.line_category))
+        if kspace_filled_rss is not None and not use_sense:
+            result["kspace_filled_rss"] = kspace_filled_rss
     return result
 
 

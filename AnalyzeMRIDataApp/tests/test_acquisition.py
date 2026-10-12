@@ -66,7 +66,7 @@ def test_partial_fourier_centre_in_middle_and_missing_lines_marked():
     r_accel, r_pf, r_total = asm.r_parts()
     assert r_accel == pytest.approx(1.0) and r_pf == pytest.approx(269 / 235)
     assert asm.facts["partial_fourier"] == "7/8"
-    assert asm.pixel_spacing_mm == pytest.approx((160 / 32, 160 / 269))
+    assert asm.pixel_spacing_mm == pytest.approx((160 / 32, 160 / 269), abs=1e-4)
     assert not asm.facts.warnings
 
 
@@ -174,6 +174,34 @@ def test_fully_sampled_pipeline_uses_full_grid(siemens_pf_file):
     filled = reconstruct_fullysamp(siemens_pf_file, pf_method="homodyne")
     assert filled["pf_method"] == "homodyne (34 lines filled)"
     assert not np.allclose(filled["image_rss"], res["image_rss"])
+
+
+@pytest.mark.gui
+def test_result_tab_shows_facts_strip_and_true_aspect(qtbot, siemens_pf_file):
+    """The tab states the acquisition, draws a sampling strip beside the
+    k-space (never on top), and shows the image with its real pixel shape."""
+    from processing.constants import SCAN_FULLY_SAMPLED
+    from processing.fullysamp_recon import reconstruct_fullysamp
+    from ui.results_viewer import ReconTab
+
+    res = reconstruct_fullysamp(siemens_pf_file, pf_method="homodyne")
+    res.update(scan_type=SCAN_FULLY_SAMPLED, dat_path=siemens_pf_file)
+    tab = ReconTab(res, "T")
+    qtbot.addWidget(tab)
+    assert tab._lbl_facts.text().startswith("Acquisition: PF 7/8 · 235/269 lines")
+    assert not tab._btn_kfilled.isHidden()
+    assert len(tab._strip_requests) == 1
+    kspace_ax = tab._strip_requests[0][0]
+    image_ax = next(ax for ax, _im, _d, main in tab._axes_images if main)
+    # Image drawn as rot90(read × phase): rows are phase → aspect = Δphase / Δread.
+    d_read, d_phase = res["pixel_spacing_mm"]
+    assert image_ax.get_aspect() == pytest.approx(d_phase / d_read)
+    assert kspace_ax.get_aspect() == "auto"
+    assert len(kspace_ax.child_axes) == 1                   # the strip, beside the data
+
+    tab._on_rotate()                                        # odd → even total rotation
+    assert next(ax for ax, _im, _d, main in tab._axes_images if main).get_aspect() == \
+        pytest.approx(d_read / d_phase)
 
 
 def test_reference_loader_uses_full_grid(siemens_pf_file):

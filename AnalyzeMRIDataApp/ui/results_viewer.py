@@ -29,6 +29,8 @@ from PyQt5.QtWidgets import (
     QSlider,
     QSpinBox,
     QTabWidget,
+    QTableWidget,
+    QTableWidgetItem,
     QVBoxLayout,
     QWidget,
 )
@@ -37,6 +39,16 @@ from PyQt5.QtWidgets import (
 # Default parameters for the anatomy mask used by "Masked Metrics".
 MASK_THRESHOLD_DEFAULT  = 0.1
 MASK_DILATION_DEFAULT   = 10
+
+# Sampling strip beside measured k-space: one colour per phase-encode line, in
+# priority order (a calibration line is also acquired). Bits match
+# processing.acquisition.LineCat.
+_STRIP_CATEGORIES = (
+    (8, "never acquired (partial Fourier)", "#eb6834"),
+    (2, "calibration (ACS)",                "#1baf7a"),
+    (1, "acquired",                         "#2a78d6"),
+    (4, "skipped (acceleration)",           "#d9d8d2"),
+)
 
 
 from processing.constants import method_display_label as _method_display_label
@@ -412,12 +424,40 @@ class ReconTab(QWidget):
         ctrl_row.addWidget(btn_rotate)
         ctrl_row.addWidget(btn_export)
 
+        # ── Acquisition facts row (Siemens results read from the file) ───────
+        self._show_filled = False
+        self._lbl_facts = QLabel(self._facts_text())
+        self._lbl_facts.setWordWrap(True)
+        self._lbl_facts.setStyleSheet("color: #52514e;")
+        self._btn_kfilled = QPushButton("Show filled k-space")
+        self._btn_kfilled.setCheckable(True)
+        self._btn_kfilled.setToolTip(
+            "Switch the k-space panel between what was measured (never-acquired\n"
+            "partial-Fourier lines empty) and the k-space after the partial-\n"
+            "Fourier fill (homodyne / POCS)."
+        )
+        self._btn_kfilled.clicked.connect(self._toggle_kfilled)
+        self._btn_kfilled.setVisible(self._result.get("kspace_filled_rss") is not None)
+        btn_acq = QPushButton("Acquisition…")
+        btn_acq.setToolTip("Every acquisition fact read from the file, with its source.")
+        btn_acq.clicked.connect(self._show_acquisition)
+        btn_acq.setVisible(bool(self._result.get("acq_facts")))
+        facts_row = QHBoxLayout()
+        facts_row.addWidget(self._lbl_facts, 1)
+        facts_row.addWidget(self._btn_kfilled)
+        facts_row.addWidget(btn_acq)
+        self._lbl_facts.setVisible(bool(self._lbl_facts.text()))
+
         layout = QVBoxLayout(self)
         layout.addLayout(ctrl_row)
+        layout.addLayout(facts_row)
         layout.addWidget(self._canvas)
 
         # Draw initial figure
         self._axes_images = []  # (ax, raw_data) pairs for W/L update
+        self._kspace_axes = []        # k-space panels: keep their own aspect
+        self._strip_requests = []     # (k-space axes, line categories) to annotate
+        self._layout_base_rot = None  # 1 when images are drawn as rot90(read × phase)
         self._draw()
 
         # Center/Crop alignment is equispaced-only; the ROI (anatomy-mask) metrics
@@ -446,6 +486,9 @@ class ReconTab(QWidget):
     def _draw(self) -> None:
         self._fig.clear()
         self._axes_images.clear()
+        self._kspace_axes.clear()
+        self._strip_requests.clear()
+        self._layout_base_rot = None
         stype = self._result.get("scan_type", "")
 
         if stype == SCAN_BAND or stype == SCAN_POISSON:
@@ -467,8 +510,112 @@ class ReconTab(QWidget):
             ax.axis("off")
 
         self._apply_rotation()
+        self._apply_physical_aspect()
+        self._draw_sampling_strips()
         self._fig.suptitle(self._title, fontsize=11, fontweight="bold", y=0.99)
         self._canvas.draw()
+
+    # ─── Acquisition facts, true aspect, sampling strip ─────────────────────
+
+    def _facts_text(self) -> str:
+        from processing.acquisition import result_summary_line
+        line = result_summary_line(self._result)
+        if line:
+            return "Acquisition: " + line
+        if self._result.get("scan_type") in (SCAN_FULLY_SAMPLED, SCAN_EQUISPACED,
+                                              SCAN_RETRO_UNDERSAMPLE):
+            from processing.utils import sequence_family
+            if sequence_family(str(self._result.get("dat_path", ""))) == "pulseq":
+                return ("Pulseq scan: geometry from the data (protocol header is a "
+                        "placeholder) — physical pixel size unknown.")
+        return ""
+
+    def _toggle_kfilled(self) -> None:
+        self._show_filled = self._btn_kfilled.isChecked()
+        self._draw()
+
+    def _show_acquisition(self) -> None:
+        """Table of every acquisition fact with its source and detail."""
+        facts = self._result.get("acq_facts") or {}
+        rows = [(name, f.get("value"), f.get("source", ""), f.get("detail", ""))
+                for name, f in facts.items()]
+        if self._result.get("pf_method"):
+            rows.append(("partial-Fourier fill", self._result["pf_method"], "parameters", ""))
+        if self._result.get("reference_blocked_reason"):
+            rows.append(("reference", "not comparable", "headers",
+                         self._result["reference_blocked_reason"]))
+        dlg = QDialog(self)
+        dlg.setWindowTitle(f"Acquisition — {self._title}")
+        dlg.resize(820, 520)
+        table = QTableWidget(len(rows), 4, dlg)
+        table.setHorizontalHeaderLabels(["Fact", "Value", "Source", "Detail"])
+        for i, row in enumerate(rows):
+            for j, cell in enumerate(row):
+                if isinstance(cell, list):
+                    cell = "; ".join(map(str, cell))
+                table.setItem(i, j, QTableWidgetItem(str(cell)))
+        table.resizeColumnsToContents()
+        table.horizontalHeader().setStretchLastSection(True)
+        lay = QVBoxLayout(dlg)
+        lay.addWidget(table)
+        buttons = QDialogButtonBox(QDialogButtonBox.Close, parent=dlg)
+        buttons.rejected.connect(dlg.reject)
+        lay.addWidget(buttons)
+        dlg.exec_()
+
+    def _apply_physical_aspect(self) -> None:
+        """Draw image panels with the real pixel shape (e.g. 0.42 × 0.59 mm)
+        instead of stretching them to the panel. Only for layouts that draw
+        rot90(read × phase) and results that know their pixel size."""
+        spacing = self._result.get("pixel_spacing_mm")
+        if not spacing or self._layout_base_rot is None:
+            return
+        d_read, d_phase = spacing
+        odd = (self._layout_base_rot + self._rotation) % 2 == 1
+        ratio = d_phase / d_read if odd else d_read / d_phase
+        kspace = {id(ax) for ax in self._kspace_axes}
+        for ax, _im, _data, _is_main in self._axes_images:
+            if id(ax) not in kspace:
+                ax.set_aspect(ratio)
+
+    def _draw_sampling_strips(self) -> None:
+        """A thin colour strip BESIDE each measured k-space panel (never on top
+        of the data): one colour per phase-encode line, aligned with the panel's
+        current rotation, with a legend underneath."""
+        from matplotlib.patches import Patch
+        if self._layout_base_rot is None:
+            return
+        k = (self._layout_base_rot + self._rotation) % 4
+        for ax, cat in self._strip_requests:
+            cat = np.asarray(cat).astype(int)
+            rgb = np.zeros((cat.size, 3))
+            present = []
+            for bit, label, colour in reversed(_STRIP_CATEGORIES):   # lowest priority first
+                hit = (cat & bit) != 0
+                if hit.any():
+                    rgb[hit] = matplotlib.colors.to_rgb(colour)
+                    present.append((label, colour))
+            # rot90^k of a (read, phase) array: odd k → phase runs along rows
+            # (reversed for k=1); even k → along columns (reversed for k=2).
+            if k % 2 == 1:
+                seq = rgb[::-1] if k == 1 else rgb
+                strip = ax.inset_axes([-0.07, 0.0, 0.045, 1.0])
+                strip.imshow(seq[:, None, :], aspect="auto", interpolation="nearest")
+                legend_y = -0.02
+            else:
+                seq = rgb[::-1] if k == 2 else rgb
+                strip = ax.inset_axes([0.0, -0.08, 1.0, 0.045])
+                strip.imshow(seq[None, :, :], aspect="auto", interpolation="nearest")
+                legend_y = -0.11
+            strip.set_xticks([])
+            strip.set_yticks([])
+            ax.set_xticks([])
+            ax.set_yticks([])
+            order = [p for p in ((lbl, c) for _b, lbl, c in _STRIP_CATEGORIES)
+                     if p in present]
+            ax.legend(handles=[Patch(facecolor=c, label=lbl) for lbl, c in order],
+                      loc="upper center", bbox_to_anchor=(0.5, legend_y), ncol=2,
+                      fontsize=6.5, frameon=False, handlelength=1.0)
 
     def _on_rotate(self) -> None:
         """Rotate every image in this tab by another 90° and redraw."""
@@ -779,13 +926,22 @@ class ReconTab(QWidget):
         else:
             axes_row0[1].axis("off")
 
+        self._layout_base_rot = 1          # images below are np.rot90(read × phase)
+        filled = r.get("kspace_filled_rss")
+        if self._show_filled and filled is not None:
+            ksp_rss, ksp_title = filled, "K-space after partial-Fourier fill (log RSS)"
+        else:
+            ksp_title = "K-space (log RSS)"
         if ksp_rss is not None:
             # ksp_rss is already a 2-D float32 RSS magnitude
             kd = np.rot90(np.log(ksp_rss + 1e-9))
             im3 = axes_row0[2].imshow(kd, cmap="gray", aspect="auto")
-            axes_row0[2].set_title("K-space (log RSS)")
+            axes_row0[2].set_title(ksp_title)
             self._add_cbar(axes_row0[2], im3)
             self._axes_images.append((axes_row0[2], im3, kd, False))
+            self._kspace_axes.append(axes_row0[2])
+            if r.get("line_category") is not None:
+                self._strip_requests.append((axes_row0[2], r["line_category"]))
 
         # ── Row 1: first 3 sensitivity maps (SENSE only) ──────────────────────
         if has_sense and axes_row1 is not None:
@@ -893,12 +1049,16 @@ class ReconTab(QWidget):
                 self._axes_images.append((axes[0, 1], im2, znd, True))
             axes[0, 2].axis("off")
 
+        self._layout_base_rot = 1          # images are np.rot90(read × phase)
         if under_ksp is not None:
             kd = np.rot90(np.log(under_ksp + 1e-9))
             im4 = axes[1, 0].imshow(kd, cmap="gray", aspect="auto")
             axes[1, 0].set_title("Undersampled K-space (log)")
             self._add_cbar(axes[1, 0], im4)
             self._axes_images.append((axes[1, 0], im4, kd, False))
+            self._kspace_axes.append(axes[1, 0])
+            if r.get("line_category") is not None:
+                self._strip_requests.append((axes[1, 0], r["line_category"]))
 
         if recon_ksp is not None:
             kg = np.rot90(np.log(recon_ksp + 1e-9))
@@ -906,6 +1066,7 @@ class ReconTab(QWidget):
             axes[1, 1].set_title(ksp_title)
             self._add_cbar(axes[1, 1], im5)
             self._axes_images.append((axes[1, 1], im5, kg, False))
+            self._kspace_axes.append(axes[1, 1])
 
         axes[1, 2].axis("off")
         if rmse is None and self._metrics_blocked():
@@ -1339,12 +1500,16 @@ class ReconTab(QWidget):
         )
 
         # ── Row 2: FS k-space | Undersampled k-space | Reconstructed k-space ─
+        self._layout_base_rot = 1          # images are np.rot90(read × phase)
         if fs_ksp is not None:
             kd = np.rot90(np.log(fs_ksp + 1e-9))
             im5 = axes[2, 0].imshow(kd, cmap="gray", aspect="auto")
             axes[2, 0].set_title("FS K-space (log)")
             self._add_cbar(axes[2, 0], im5)
             self._axes_images.append((axes[2, 0], im5, kd, False))
+            self._kspace_axes.append(axes[2, 0])
+            if r.get("line_category") is not None and not swap_pe_read:
+                self._strip_requests.append((axes[2, 0], r["line_category"]))
 
         if under_ksp is not None:
             kd2 = np.rot90(np.log(under_ksp + 1e-9))
@@ -1352,6 +1517,7 @@ class ReconTab(QWidget):
             axes[2, 1].set_title("Undersampled K-space (log)")
             self._add_cbar(axes[2, 1], im6)
             self._axes_images.append((axes[2, 1], im6, kd2, False))
+            self._kspace_axes.append(axes[2, 1])
 
         if recon_ksp is not None:
             kd3 = np.rot90(np.log(recon_ksp + 1e-9))
@@ -1359,6 +1525,7 @@ class ReconTab(QWidget):
             axes[2, 2].set_title(f"{method_label} K-space (log)")
             self._add_cbar(axes[2, 2], im7)
             self._axes_images.append((axes[2, 2], im7, kd3, False))
+            self._kspace_axes.append(axes[2, 2])
         else:
             axes[2, 2].axis("off")
 

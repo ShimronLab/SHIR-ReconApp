@@ -392,8 +392,9 @@ class ParamsPanel(QWidget):
         self.spin_iters.setToolTip("Number of PICS CG iterations")
         form_poisson.addRow("Max iterations:", self.spin_iters)
 
-        # Disable CS-only widgets when Zero-Fill is selected
+        # Disable CS-only widgets when Zero-Fill is selected (also for the default)
         self.combo_poisson_mode.currentIndexChanged.connect(self._on_poisson_mode_changed)
+        self._on_poisson_mode_changed()
 
         vbox.addWidget(grp_poisson)
 

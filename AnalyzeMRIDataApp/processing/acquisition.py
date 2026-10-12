@@ -368,6 +368,26 @@ def result_extras(asm: Optional[Assembled]) -> Dict[str, Any]:
     }
 
 
+def result_summary_line(result: Dict[str, Any]) -> Optional[str]:
+    """
+    One line describing a result's acquisition, shared by the result tab and
+    the PDF, e.g. 'PF 7/8 · 235/269 lines · R 1 · phase OS 0% · readout OS 2×
+    · partial Fourier: zerofill (34 lines zero) · pixel 0.417×0.595 mm'.
+    None when the result was not built from the file's metadata (Pulseq).
+    """
+    summary = result.get("acq_summary")
+    if not summary:
+        return None
+    parts = [summary]
+    pf = result.get("pf_method")
+    if pf and not str(pf).startswith("none"):
+        parts.append(f"partial Fourier: {pf}")
+    spacing = result.get("pixel_spacing_mm")
+    if spacing:
+        parts.append(f"pixel {spacing[0]:.3f}×{spacing[1]:.3f} mm")
+    return " · ".join(parts)
+
+
 def protocol_signature(dat_path: str, slice_idx: Optional[int] = None) -> Optional[Dict[str, Any]]:
     """
     What makes two Siemens acquisitions comparable, read from the header:
@@ -446,7 +466,8 @@ def _header_float(hdr: dict, *paths: Tuple[str, str]) -> Optional[float]:
 def _pixel_spacing(yaps: dict, n_read: int, n_pe: int) -> Optional[Tuple[float, float]]:
     try:
         sl = yaps["sSliceArray"]["asSlice"][0]
-        return float(sl["dReadoutFOV"]) / n_read, float(sl["dPhaseFOV"]) / n_pe
+        return (round(float(sl["dReadoutFOV"]) / n_read, 4),
+                round(float(sl["dPhaseFOV"]) / n_pe, 4))
     except (KeyError, IndexError, TypeError, ValueError, ZeroDivisionError):
         return None
 

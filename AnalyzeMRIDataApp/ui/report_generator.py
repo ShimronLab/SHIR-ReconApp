@@ -50,6 +50,37 @@ def _rot(a):
     return a
 
 
+# Per-page acquisition line and final-image pixel size (read, phase) in mm,
+# set from result keys by _add_recon_page; None for results without them.
+_PAGE_FACTS: Optional[str] = None
+_PAGE_SPACING = None
+
+
+def _set_page_acquisition(result: Dict[str, Any]) -> None:
+    from processing.acquisition import result_summary_line
+    global _PAGE_FACTS, _PAGE_SPACING
+    _PAGE_FACTS = result_summary_line(result)
+    spacing = result.get("pixel_spacing_mm")
+    _PAGE_SPACING = tuple(spacing) if spacing else None
+
+
+def _suptitle(fig, title: str) -> None:
+    """Page title, with the acquisition line underneath when known."""
+    fig.suptitle(title, fontsize=12, fontweight="bold")
+    if _PAGE_FACTS:
+        fig.text(0.5, 0.952, _PAGE_FACTS, ha="center", va="top", fontsize=9,
+                 color="#52514e")
+
+
+def _image_aspect():
+    """Physical pixel aspect for image panels drawn as rot90(read × phase)
+    plus the page rotation; 'auto' when the pixel size is unknown."""
+    if not _PAGE_SPACING:
+        return "auto"
+    d_read, d_phase = _PAGE_SPACING
+    return d_phase / d_read if (1 + _PAGE_ROT) % 2 else d_read / d_phase
+
+
 def _imshow_adjusted(
     ax,
     data: np.ndarray,
@@ -58,12 +89,15 @@ def _imshow_adjusted(
     wl_max: int,
     brightness: float,
     is_main: bool = False,
+    image: bool = False,
     **kwargs,
 ) -> None:
     """imshow with percentile W/L and optional brightness scaling.
 
     Brightness is applied only to *main* reconstructed images (not k-space,
-    sensitivity maps, or the GRAPPA difference image).
+    sensitivity maps, or the GRAPPA difference image). ``image=True`` marks an
+    image-domain panel drawn as rot90(read × phase): it gets the physical pixel
+    aspect when the pixel size is known.
     """
     data = _rot(data)                      # match the viewer's chosen rotation
     vmin = np.percentile(data, wl_min)
@@ -71,8 +105,8 @@ def _imshow_adjusted(
     if is_main and brightness > 0:
         vmax = vmax / brightness
     vmax = max(float(vmax), float(vmin) + 1e-9)
-    # ax.imshow(data, cmap=cmap, aspect="auto", vmin=vmin, vmax=vmax, **kwargs)
-    ax.imshow(data, cmap=cmap, aspect="auto", vmin=vmin, vmax=vmax, rasterized=True, **kwargs)
+    aspect = _image_aspect() if image else "auto"
+    ax.imshow(data, cmap=cmap, aspect=aspect, vmin=vmin, vmax=vmax, rasterized=True, **kwargs)
 
 
 def _add_all_coil_sens_page(
@@ -117,8 +151,9 @@ def _add_all_coil_sens_page(
 
 
 def _add_recon_page(pdf: PdfPages, result: Dict[str, Any], title: str) -> None:
-    """Add one figure page for a reconstruction result."""
+    """Add one figure page for a reconstruction result (+ its acquisition page)."""
     _set_page_rotation(result)   # applies to every image drawn for this page
+    _set_page_acquisition(result)
     stype = result.get("scan_type", "Unknown")
 
     if stype == SCAN_BAND or stype == SCAN_POISSON:
@@ -135,6 +170,47 @@ def _add_recon_page(pdf: PdfPages, result: Dict[str, Any], title: str) -> None:
         _page_fullysamp(pdf, result, title)      # generic Cartesian-RSS result
     else:
         _page_generic(pdf, result, title)
+    _add_acquisition_page(pdf, result, title)
+
+
+def _add_acquisition_page(pdf: PdfPages, result: Dict[str, Any], title: str) -> None:
+    """Every acquisition fact with its source, plus the run's parameters."""
+    facts = result.get("acq_facts")
+    run_params = result.get("run_params")
+    if not facts and not run_params:
+        return
+    lines = [f"{title} — acquisition and parameters", ""]
+    if facts:
+        lines.append(f"{'fact':22s} {'value':30s} {'source':20s} detail")
+        lines.append("─" * 100)
+        for name, f in facts.items():
+            value = f.get("value")
+            if isinstance(value, list) and name == "warnings":
+                value = "; ".join(map(str, value))
+            lines.append(f"{name:22s} {str(value)[:30]:30s} {f.get('source', ''):20s} "
+                         f"{f.get('detail', '')}")
+        if result.get("pf_method"):
+            lines.append(f"{'partial-Fourier fill':22s} {result['pf_method']}")
+    else:
+        lines.append("Acquisition facts: not read from the file (Pulseq or unreadable "
+                     "header — geometry inferred from the data).")
+    if result.get("reference_blocked_reason") or result.get("reference_warning"):
+        import textwrap
+        lines += ["", "Reference comparison:"]
+        lines += textwrap.wrap(result.get("reference_blocked_reason")
+                               or result.get("reference_warning"), width=110)
+    if run_params:
+        lines += ["", "Run parameters:"]
+        items = [f"{k} = {v}" for k, v in run_params.items()]
+        half = (len(items) + 1) // 2
+        for left, right in zip(items[:half], items[half:] + [""]):
+            lines.append(f"  {left[:52]:54s}{right[:52]}")
+    fig, ax = plt.subplots(figsize=(11, 8.5))
+    ax.axis("off")
+    ax.text(0.01, 0.99, "\n".join(lines), transform=ax.transAxes, va="top",
+            family="monospace", fontsize=7.5)
+    pdf.savefig(fig, dpi=100)
+    plt.close(fig)
 
 
 def _page_generic(pdf: PdfPages, result: Dict[str, Any], title: str) -> None:
@@ -162,7 +238,7 @@ def _page_nufft(pdf: PdfPages, result: Dict[str, Any], title: str) -> None:
     ncols  = 3
     nrows  = 2
     fig, axes = plt.subplots(nrows, ncols, figsize=(15, 10))
-    fig.suptitle(title, fontsize=12, fontweight="bold")
+    _suptitle(fig, title)
 
     # (0,0) combined image
     if combined is not None:
@@ -268,22 +344,22 @@ def _page_fullysamp(pdf: PdfPages, result: Dict[str, Any], title: str) -> None:
         fig, axes_row0 = plt.subplots(1, 3, figsize=(15, 5))
         axes_row1 = None
 
-    fig.suptitle(title, fontsize=12, fontweight="bold")
+    _suptitle(fig, title)
 
     # ── Row 0: main images ────────────────────────────────────────────────────
     if has_sense and image_combined is not None:
         _imshow_adjusted(axes_row0[0], np.rot90(_norm(image_combined)), "gray",
-                         wl_min, wl_max, brightness, is_main=True)
+                         wl_min, wl_max, brightness, is_main=True, image=True)
         axes_row0[0].set_title("SENSE Combined (ESPIRiT)")
     elif image_rss is not None:
         _imshow_adjusted(axes_row0[0], np.rot90(_norm(image_rss)), "gray",
-                         wl_min, wl_max, brightness, is_main=True)
+                         wl_min, wl_max, brightness, is_main=True, image=True)
         axes_row0[0].set_title("RSS Image")
     axes_row0[0].axis("off")
 
     if has_sense and image_rss is not None:
         _imshow_adjusted(axes_row0[1], np.rot90(_norm(image_rss)), "gray",
-                         wl_min, wl_max, brightness, is_main=True)
+                         wl_min, wl_max, brightness, is_main=True, image=True)
         axes_row0[1].set_title("RSS Image (reference)")
         axes_row0[1].axis("off")
     else:
@@ -305,7 +381,7 @@ def _page_fullysamp(pdf: PdfPages, result: Dict[str, Any], title: str) -> None:
         for c in range(n):
             img_s = np.rot90(_norm(arr[:, :, c] if arr.ndim == 3 else arr))
             _imshow_adjusted(axes_row1[c], img_s, "viridis",
-                             wl_min, wl_max, brightness, is_main=False)
+                             wl_min, wl_max, brightness, is_main=False, image=True)
             axes_row1[c].set_title(f"Sensitivity Map — Coil {c}")
             axes_row1[c].axis("off")
         for c in range(n, 3):
@@ -362,38 +438,46 @@ def _page_equispaced(pdf: PdfPages, result: Dict[str, Any], title: str) -> None:
 
     nrows, ncols = (3 if has_sens else 2, 3)
     fig, axes = plt.subplots(nrows, ncols, figsize=(18, 12 if not has_sens else 16))
-    fig.suptitle(title, fontsize=12, fontweight="bold")
+    _suptitle(fig, title)
 
+    # Same orientation as the viewer: np.rot90 of the (read, phase) arrays.
     if grappa_img is not None:
         g = norm_img(grappa_img)
         rm = f"  RMSE={rmse:.4f}  PSNR={psnr:.1f}dB" if rmse else ""
         if rmse and ssim_val is not None:
             rm += f"  SSIM={ssim_val:.4f}"
-        _imshow_adjusted(axes[0, 0], g.T, "gray", wl_min, wl_max, brightness, is_main=True)
+        _imshow_adjusted(axes[0, 0], np.rot90(g), "gray", wl_min, wl_max, brightness,
+                         is_main=True, image=True)
         axes[0, 0].set_title(f"{method_label} (R={actual_r:.3f}×){rm}")
 
     if has_ref:
         r = norm_img(ref_img)
-        _imshow_adjusted(axes[0, 1], r.T, "gray", wl_min, wl_max, brightness, is_main=True)
+        _imshow_adjusted(axes[0, 1], np.rot90(r), "gray", wl_min, wl_max, brightness,
+                         is_main=True, image=True)
         axes[0, 1].set_title("Fully-Sampled Reference")
 
-        abs_diff = np.abs(g - r).T if grappa_img is not None else None
+        abs_diff = (np.rot90(np.abs(g - r))
+                    if grappa_img is not None and np.shape(g) == np.shape(r) else None)
         if abs_diff is not None:
-            _imshow_adjusted(axes[0, 2], abs_diff, "gray", wl_min, wl_max, brightness, is_main=False)
+            _imshow_adjusted(axes[0, 2], abs_diff, "gray", wl_min, wl_max, brightness,
+                             is_main=False, image=True)
             axes[0, 2].set_title("Absolute Difference")
+        else:
+            axes[0, 2].axis("off")
     else:
         if zf_img is not None:
-            _imshow_adjusted(axes[0, 1], norm01(zf_img).T, "gray", wl_min, wl_max, brightness, is_main=True)
+            _imshow_adjusted(axes[0, 1], np.rot90(norm01(zf_img)), "gray", wl_min, wl_max,
+                             brightness, is_main=True, image=True)
             axes[0, 1].set_title("Zero-Fill Reconstruction")
         axes[0, 2].axis("off")
 
     if under_ksp is not None:
-        _imshow_adjusted(axes[1, 0], np.log(under_ksp.T + 1e-9), "gray",
+        _imshow_adjusted(axes[1, 0], np.rot90(np.log(under_ksp + 1e-9)), "gray",
                          wl_min, wl_max, brightness, is_main=False)
         axes[1, 0].set_title("Undersampled K-space (log RSS)")
 
     if grappa_ksp is not None:
-        _imshow_adjusted(axes[1, 1], np.log(grappa_ksp.T + 1e-9), "gray",
+        _imshow_adjusted(axes[1, 1], np.rot90(np.log(grappa_ksp + 1e-9)), "gray",
                          wl_min, wl_max, brightness, is_main=False)
         axes[1, 1].set_title(ksp_title)
 
@@ -434,6 +518,8 @@ def _page_equispaced(pdf: PdfPages, result: Dict[str, Any], title: str) -> None:
         info_lines.append(f"PSNR : {psnr:.2f} dB")
         if ssim_val is not None:
             info_lines.append(f"SSIM : {ssim_val:.4f}")
+    elif result.get("reference_blocked_reason"):
+        info_lines.append("\nMetrics withheld:\nreference is a different\nacquisition")
 
     axes[1, 2].text(
         0.1, 0.6,
@@ -441,6 +527,12 @@ def _page_equispaced(pdf: PdfPages, result: Dict[str, Any], title: str) -> None:
         transform=axes[1, 2].transAxes,
         fontsize=13, va="top",
     )
+    warn = result.get("reference_blocked_reason") or result.get("reference_warning")
+    if warn:
+        import textwrap
+        axes[1, 2].text(0.02, 0.02, "\n".join(textwrap.wrap("⚠ " + warn, width=60)),
+                        transform=axes[1, 2].transAxes, fontsize=7, va="bottom",
+                        color="crimson")
 
     # ── Row 2: sensitivity maps (first 3 coils) ──────────────────────────
     if has_sens:
@@ -448,8 +540,8 @@ def _page_equispaced(pdf: PdfPages, result: Dict[str, Any], title: str) -> None:
         n   = min(arr.shape[-1], 3) if arr.ndim >= 3 else 1
         for c in range(n):
             img_s = arr[..., c] if arr.ndim >= 3 else arr
-            _imshow_adjusted(axes[2, c], np.abs(img_s).T, "viridis",
-                             wl_min, wl_max, brightness, is_main=False)
+            _imshow_adjusted(axes[2, c], np.rot90(np.abs(img_s)), "viridis",
+                             wl_min, wl_max, brightness, is_main=False, image=True)
             axes[2, c].set_title(f"Sensitivity Map — Coil {c}")
             axes[2, c].axis("off")
         for c in range(n, 3):
@@ -465,7 +557,7 @@ def _page_equispaced(pdf: PdfPages, result: Dict[str, Any], title: str) -> None:
     # ── Separate page: all-coil sensitivity maps grid ─────────────────────
     if has_sens:
         _add_all_coil_sens_page(pdf, sens_maps, title, wl_min, wl_max, brightness,
-                                orient=lambda a: np.abs(a).T)
+                                orient=lambda a: np.rot90(np.abs(a)))
 
 
 def _page_retro(pdf: PdfPages, result: Dict[str, Any], title: str) -> None:
@@ -503,18 +595,18 @@ def _page_retro(pdf: PdfPages, result: Dict[str, Any], title: str) -> None:
         return (x - mn) / (mx - mn + 1e-12)
 
     fig, axes = plt.subplots(3, 3, figsize=(18, 16))
-    fig.suptitle(title, fontsize=12, fontweight="bold")
+    _suptitle(fig, title)
 
     # Row 0: Fully-Sampled | Zero-Filled | PE Mask (2-D image)
     if fs_img is not None:
         _imshow_adjusted(axes[0, 0], np.rot90(norm01(fs_img)), "gray",
-                         wl_min, wl_max, brightness, is_main=True)
+                         wl_min, wl_max, brightness, is_main=True, image=True)
         axes[0, 0].set_title("Fully-Sampled (Reference)")
     axes[0, 0].axis("off")
 
     if zf_img is not None:
         _imshow_adjusted(axes[0, 1], np.rot90(norm01(zf_img)), "gray",
-                         wl_min, wl_max, brightness, is_main=True)
+                         wl_min, wl_max, brightness, is_main=True, image=True)
         axes[0, 1].set_title("Zero-Filled")
     axes[0, 1].axis("off")
 
@@ -541,12 +633,13 @@ def _page_retro(pdf: PdfPages, result: Dict[str, Any], title: str) -> None:
         if rmse is not None and ssim_val is not None:
             rm += f"  SSIM={ssim_val:.4f}"
         _imshow_adjusted(axes[1, 0], np.rot90(norm01(recon_img)), "gray",
-                         wl_min, wl_max, brightness, is_main=True)
+                         wl_min, wl_max, brightness, is_main=True, image=True)
         axes[1, 0].set_title(f"{method_label} (R={actual_r:.3f}×){rm}")
     axes[1, 0].axis("off")
 
     if diff_img is not None and method != "none":
-        axes[1, 1].imshow(_rot(np.rot90(diff_img)), cmap="gray", aspect="auto", rasterized=True)
+        axes[1, 1].imshow(_rot(np.rot90(diff_img)), cmap="gray", aspect=_image_aspect(),
+                          rasterized=True)
         axes[1, 1].set_title("Absolute Difference")
     axes[1, 1].axis("off")
 
@@ -656,15 +749,18 @@ def generate_pdf(
             f"Date   : {now}",
             f"Scans  : {len(results)}",
         ]
-        if params_summary:
-            lines.append("")
-            lines.append("Parameters:")
-            for k, v in params_summary.items():
-                lines.append(f"  {k} : {v}")
-
-        ax.text(0.5, 0.55, "\n".join(lines), transform=ax.transAxes,
-                fontsize=14, va="center", ha="center",
+        ax.text(0.5, 0.92, "\n".join(lines), transform=ax.transAxes,
+                fontsize=14, va="top", ha="center",
                 bbox=dict(boxstyle="round", facecolor="#eef3fa", alpha=0.8))
+        if params_summary:
+            # Two compact columns so ~50 parameters fit on the page. Each
+            # result's own run parameters are listed on its acquisition page.
+            items = [f"{k} = {v}" for k, v in params_summary.items()]
+            half = (len(items) + 1) // 2
+            rows = [f"{left[:48]:50s}{right[:48]}"
+                    for left, right in zip(items[:half], items[half:] + [""])]
+            ax.text(0.02, 0.62, "Parameters:\n" + "\n".join(rows), transform=ax.transAxes,
+                    fontsize=7.5, va="top", ha="left", family="monospace")
         plt.tight_layout()
         pdf.savefig(fig, dpi=100)
         plt.close(fig)

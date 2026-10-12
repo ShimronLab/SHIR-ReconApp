@@ -339,6 +339,9 @@ class ReconWorker(QObject):
                 result["label"] += suffix_map.get(result.get("recon_path"), " (RSS)")
             result["dat_path"]   = job["dat_path"]
             result["folder_key"] = job.get("folder_key", "")
+            # The exact parameters this result was made with (the panel may
+            # change before the report is saved).
+            result["run_params"] = dict(params)
             self.result_ready.emit(result)
 
         except JobAborted:
@@ -978,7 +981,9 @@ class MainWindow(QMainWindow):
                         results       = group_results,
                         output_path   = pdf_path,
                         folder_name   = fkey,
-                        params_summary= p,
+                        # Parameters of the run that produced these results, not
+                        # the panel's current state.
+                        params_summary= group_results[0].get("run_params", p),
                     )
                     saved.append(pdf_path)
                     self._log_msg(f"  PDF saved: {pdf_path}")
