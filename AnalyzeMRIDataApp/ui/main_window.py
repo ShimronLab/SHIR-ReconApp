@@ -1171,10 +1171,12 @@ def _attach_references(jobs: List[Dict]) -> List[Dict]:
     "_equispaced_R") are routed to the Siemens SE reference; all other scans
     are routed to the custom fully-sampled reference.
 
-    When a folder holds several custom fully-sampled scans, the one whose
-    swapPE-ness matches the scan is preferred: a swapPE reference has readout
-    and phase swapped, so pairing it with a non-swapPE scan (or vice versa)
-    compares a rotated/mirrored image and wrecks the metrics.
+    When a folder holds several fully-sampled scans, the one from the same
+    sequence family (a Pulseq scan is not scored against a Siemens product
+    scan that happens to be named "fully_sampled") and with matching
+    swapPE-ness is preferred: a swapPE reference has readout and phase
+    swapped, so pairing it with a non-swapPE scan (or vice versa) compares a
+    rotated/mirrored image and wrecks the metrics.
     """
     import re as _re
     _SIEMENS_GRAPPA = _re.compile(
@@ -1220,13 +1222,18 @@ def _attach_references(jobs: List[Dict]) -> List[Dict]:
                     siemens_se_map[dat_dir_str] = str(f)
                     break
 
+    from processing.utils import sequence_family
+
     def _custom_ref(dat_dir: str, scan_path: str) -> Optional[str]:
-        """Custom fully-sampled reference with matching swapPE-ness (else any)."""
+        """Fully-sampled reference from the same sequence family (Pulseq vs
+        Siemens product, read from the header) with matching swapPE-ness;
+        else the closest available."""
         cands = sorted(fs_map.get(dat_dir, []))
         if not cands:
             return None
-        same = [c for c in cands if _is_swap(c) == _is_swap(scan_path)]
-        return (same or cands)[0]
+        family = sequence_family(scan_path)
+        return min(cands, key=lambda c: (sequence_family(c) != family,
+                                         _is_swap(c) != _is_swap(scan_path), c))
 
     for j in jobs:
         # A user-set reference (folder-panel "Set reference") is never overwritten.

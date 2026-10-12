@@ -734,6 +734,24 @@ def _check_echo_order(dat_path, raw, pe, detail, emit):
     return pe, detail
 
 
+def espirit_calib_width(asm: Assembled, wanted: int) -> int:
+    """
+    ESPIRiT calibration width for this grid. BART ecalib and sigpy
+    EspiritCalib both calibrate on the region centred on the grid, rows
+    (n − w)//2 … + w; it must hold measured calibration lines only, so this is
+    the widest w ≤ wanted whose centred region lies inside ``calib_range``
+    (a block that is off-centre by a line — some Pulseq grids — narrows it).
+    """
+    n = len(asm.line_category)
+    lo, hi = asm.calib_range
+    top = min(int(wanted), hi - lo)
+    for w in range(top, 0, -1):
+        start = (n - w) // 2
+        if start >= lo and start + w <= hi:
+            return w
+    return top
+
+
 def finalize_image(img: np.ndarray, asm: Optional[Assembled], axis: int = 1) -> np.ndarray:
     """Crop phase oversampling so the image shows the prescribed field of view."""
     if asm is None:

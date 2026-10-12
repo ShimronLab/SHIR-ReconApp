@@ -632,6 +632,16 @@ def reconstruct_equispaced(
          _refscan_sl, _ref_raw_cache, mask_method, r_factor, _tse) = _siemens_geometry(
             asm, r_factor, log)
 
+    # ESPIRiT calibrates on the grid-centred region; on the layer's grid the
+    # measured block can sit a line off centre, so keep that region inside it.
+    espirit_calib = acs_end - acs_start
+    if asm is not None:
+        from .acquisition import espirit_calib_width
+        espirit_calib = espirit_calib_width(asm, espirit_calib)
+        if espirit_calib != acs_end - acs_start:
+            log(f"  ESPIRiT calibration uses {espirit_calib} centred lines (the calibration "
+                f"block [{acs_start}, {acs_end}) is off the grid centre).")
+
     # ── 4a. GRAPPA reconstruction ─────────────────────────────────────────────
     recon_kspace  = None
     sense_image   = None
@@ -674,7 +684,7 @@ def reconstruct_equispaced(
                 k4d = full_kspace[:, :, np.newaxis, :].astype(np.complex64)
                 k4d_norm = espirit_normalise(k4d)[0].astype(np.complex64)
 
-                actual_calib = acs_end - acs_start
+                actual_calib = espirit_calib
                 log(f"  ESPIRiT calibration (calib={actual_calib})…")
                 sens_maps_out = espirit_maps(k4d_norm, actual_calib, num_maps=1,
                                          crop=espirit_crop, log=log)
@@ -704,7 +714,7 @@ def reconstruct_equispaced(
             # Normalise k-space for numerical stability
             k4d_norm, _ = espirit_normalise(k4d)
 
-            actual_calib = acs_end - acs_start   # ACS width from JSON/mask
+            actual_calib = espirit_calib         # ACS width from the file / mask
             log(f"  Computing sensitivity maps (ESPIRiT, calib={actual_calib})…")
             sens_maps_out = espirit_maps(k4d_norm, actual_calib, num_maps=1,
                                          crop=espirit_crop, log=log)
@@ -746,7 +756,7 @@ def reconstruct_equispaced(
             # Normalise k-space for numerical stability
             k4d_norm, _ = espirit_normalise(k4d)
 
-            actual_calib = acs_end - acs_start
+            actual_calib = espirit_calib
             log(f"  ESPIRiT calibration (calib={actual_calib}, maps={espirit_num_maps})…")
             sens_maps_out = espirit_maps(k4d_norm, actual_calib,
                                          num_maps=espirit_num_maps,

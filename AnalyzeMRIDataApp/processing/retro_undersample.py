@@ -295,7 +295,8 @@ def reconstruct_retro(
             _k4d_norm, _ = espirit_normalise(_k4d)
             _calib = calib_width
             if asm is not None:   # calibrate only inside the symmetric measured region
-                _calib = min(calib_width, asm.calib_range[1] - asm.calib_range[0])
+                from .acquisition import espirit_calib_width
+                _calib = espirit_calib_width(asm, calib_width)
             _maps = _emaps(_k4d_norm, _calib, num_maps=1, crop=espirit_crop, log=log)
             _ref = _pics(_k4d_norm, _maps, soft_sense=True, iters=sense_max_iter, log=log)
             fully_sampled_image = finalize_image(np.abs(np.squeeze(_ref)).astype(np.float32), asm)

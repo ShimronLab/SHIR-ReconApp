@@ -53,6 +53,18 @@ def test_equispaced_lines_mask_and_calibration_block(ksp):
     assert asm.r_parts()[1] == 1.0                      # no partial Fourier
 
 
+def test_espirit_region_stays_inside_an_off_centre_calibration_block(ksp):
+    from processing.acquisition import espirit_calib_width
+    centred = np.union1d(np.arange(-32, 32, 4), np.arange(-6, 6))          # rows 26..37
+    asm = assemble(readouts(ksp, centred), centred)
+    assert asm.calib_range == (26, 38) and espirit_calib_width(asm, 24) == 12
+    off = np.union1d(np.arange(-32, 32, 4), np.arange(-5, 7))              # rows 27..38
+    asm = assemble(readouts(ksp, off), off)
+    assert asm.calib_range == (27, 39)
+    w = espirit_calib_width(asm, 24)                  # 12 centred rows would be 26..37
+    assert w == 10 and (N - w) // 2 == 27             # rows 27..36, all measured
+
+
 def test_missing_outer_lines_of_an_accelerated_pattern_keep_the_square_grid(ksp):
     pe = np.union1d(np.arange(0, 31, 3), -np.arange(0, 31, 3))   # reaches ±30 of ±32
     asm = assemble(readouts(ksp, pe), pe)

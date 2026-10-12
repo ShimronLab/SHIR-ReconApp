@@ -121,6 +121,27 @@ def test_reference_pairing_matches_swappe(tmp_path):
     assert jobs[2]["reference_dat_path"] == p[names[1]]      # Poisson → plain
 
 
+def test_pulseq_scan_is_not_scored_against_a_product_fully_sampled(tmp_path, monkeypatch):
+    """A Siemens product scan named '…fully_sampled…' sorts before the Pulseq
+    one ('S' < 'm'); the Pulseq scan must still get the Pulseq reference."""
+    import processing.utils as utils
+    from processing.constants import SCAN_EQUISPACED, SCAN_FULLY_SAMPLED
+    from ui.main_window import _attach_references
+
+    names = ["Siemens_meas_t1_se_tra_fully_sampled.dat", "meas_band_se_fully_sampled.dat",
+             "meas_equispaced_R2_acs24.dat"]
+    p = {n: str(tmp_path / n) for n in names}
+    for path in p.values():
+        open(path, "wb").close()
+    monkeypatch.setattr(utils, "sequence_family",
+                        lambda path: "siemens" if "Siemens_" in str(path) else "pulseq")
+    jobs = [{"dat_path": p[names[0]], "scan_type": SCAN_FULLY_SAMPLED},
+            {"dat_path": p[names[1]], "scan_type": SCAN_FULLY_SAMPLED},
+            {"dat_path": p[names[2]], "scan_type": SCAN_EQUISPACED}]
+    jobs = _attach_references(jobs)
+    assert jobs[2]["reference_dat_path"] == p[names[1]]
+
+
 @pytest.mark.gui
 def test_viewer_ref_orient_override(qtbot):
     """Poisson tab with a rotated reference: auto fixes it; a manual pick

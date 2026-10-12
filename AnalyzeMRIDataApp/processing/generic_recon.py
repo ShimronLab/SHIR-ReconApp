@@ -291,7 +291,8 @@ def _reconstruct_cs_pattern(
 
     calib = calib_width
     if asm is not None:   # calibrate only inside the measured calibration region
-        calib = min(calib_width, asm.calib_range[1] - asm.calib_range[0])
+        from .acquisition import espirit_calib_width
+        calib = espirit_calib_width(asm, calib_width)
     log(f"Computing ESPIRiT sensitivity maps (calib={calib})…")
     sens_maps = espirit_maps(k4d_norm, calib, num_maps=1,
                              crop=espirit_crop, log=log)
