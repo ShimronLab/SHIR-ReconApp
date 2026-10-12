@@ -217,6 +217,9 @@ SSIM / NMSE / PSNR). By default the app finds the reference automatically,
      back to the Siemens SE.
    - **Poisson-disc** just takes the folder's fully-sampled scan (custom
      preferred, else the Siemens SE).
+   - When several `fully_sampled` files qualify, the one from the **same
+     sequence family** (Pulseq vs Siemens product, read from the header) wins,
+     then the one with the same **swapPE**-ness, then the first by name.
 3. If **no** reference is found, the recon still runs — just **without metrics**.
 4. **Siemens product pairs:** the two headers are compared first (sequence, TE,
    TR, slice position/orientation/thickness, FOV). If they differ, the metrics

@@ -171,8 +171,9 @@ The app retrospectively applies the chosen mask to the fully-sampled k-space and
 - **Set reference ▸** — override the automatic fully-sampled reference used for
   the Equispaced/Poisson difference + SSIM/NMSE/PSNR (pick a detected
   fully-sampled scan, browse for a `.dat`, or restore Auto). Auto prefers the
-  fully-sampled scan with the same swapPE-ness as the scan (a `swapPE`
-  reference has readout/phase swapped, i.e. a rotated image).
+  fully-sampled scan from the same sequence family (Pulseq vs Siemens product,
+  read from the header), then the one with the same swapPE-ness as the scan (a
+  `swapPE` reference has readout/phase swapped, i.e. a rotated image).
 
 ### 5. View results
 Each completed reconstruction appears as a new **tab** in the results viewer:
@@ -644,6 +645,9 @@ TWIX reader, so no scanner data is required for the bulk of the suite.
 - **ESPIRiT thresholds differ between engines by default:** BART `ecalib` uses `-t 0.001`, sigpy
   `EspiritCalib` uses `thresh 0.02` (each library's default, passed explicitly). This is one
   source of the small BART/sigpy differences; set **ESPIRiT threshold** to use one value in both.
+- **ESPIRiT calibrates on a grid-centred region.** When a `.seq` places the calibration block a
+  line off the grid centre, the region is narrowed (e.g. block rows 114–138 on a 256 grid:
+  25 → 23 lines) so it holds measured lines only; the log's `calib=` value is the width used.
 - **TSE folders** (`TSE_1mm`, `TSE_3mm`) contain Band data only; Fully-Sampled, Equispaced and
   Poisson-Disc scan types will not appear for these folders.
 - Intermediate BART `.cfl` / `.hdr` files are written to a **temporary directory** and deleted
