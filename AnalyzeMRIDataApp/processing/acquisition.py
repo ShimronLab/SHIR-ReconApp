@@ -302,15 +302,27 @@ def assemble_siemens(
     # ── Readout: pad an asymmetric echo, then remove oversampling ─────────────
     if arr.shape[0] != ncol:
         raise AcquisitionConflict(f"Readout length {arr.shape[0]} ≠ samples per readout {ncol}.")
+    # The protocol's Fourier matrix (base resolution × readout OS) with the echo
+    # centre in its middle; an asymmetric echo leaves the short side zero, and
+    # samples beyond the matrix on the long side are not used (as on the scanner).
+    n_fourier = _header_float(hdr, ("Meas", "iNoOfFourierColumns"))
     n_col_full = 2 * max(centre_col, ncol - centre_col)
+    how = "symmetric about CenterCol"
+    if n_fourier and int(n_fourier) % 2 == 0 and int(n_fourier) // 2 >= min(centre_col, ncol - centre_col):
+        n_col_full, how = int(n_fourier), "Meas.iNoOfFourierColumns"
     col_off = n_col_full // 2 - centre_col
+    src_lo, src_hi = max(0, -col_off), min(ncol, n_col_full - col_off)
     facts.set("n_adc_samples", ncol, Src.MDH, "SamplesInScan")
-    facts.set("asymmetric_echo", n_col_full != ncol, Src.MDH,
+    facts.set("n_read_full", n_col_full, Src.HEADER if how.startswith("Meas") else Src.DERIVED, how)
+    facts.set("asymmetric_echo", n_col_full != ncol or centre_col * 2 != ncol, Src.MDH,
               f"CenterCol {centre_col} of {ncol} samples")
+    if src_hi - src_lo < ncol:
+        facts.warnings.append(f"{ncol - (src_hi - src_lo)} readout samples beyond the "
+                              f"{n_col_full}-column Fourier matrix not used.")
     # The reader's line axis is indexed by the Lin counter, so array row
     # (row - offset) holds full-grid row `row`.
     kspace = np.zeros((n_col_full, n_full, n_coils), dtype=np.complex128)
-    kspace[col_off:col_off + ncol, rows, :] = arr[:, rows - offset, :]
+    kspace[col_off + src_lo:col_off + src_hi, rows, :] = arr[src_lo:src_hi][:, rows - offset, :]
 
     read_os = _header_float(hdr, ("Meas", "flReadoutOSFactor"), ("Dicom", "flReadoutOSFactor"))
     read_os = int(read_os) if read_os in (1.0, 2.0) else 1
@@ -873,7 +885,8 @@ def _merge_refscan(kspace, meta, slice_idx, offset, col_off, ncol, n_col_full, r
     acquired = np.sum(np.abs(kspace) ** 2, axis=(0, 2)) > 0
     new = ~acquired[rows]
     block = np.zeros((n_col_full, rows.size, ref.shape[2]), dtype=np.complex128)
-    block[col_off:col_off + ncol] = ref[:, ref_lin, :]
+    lo, hi = max(0, -col_off), min(ncol, n_col_full - col_off)
+    block[col_off + lo:col_off + hi] = ref[lo:hi][:, ref_lin, :]
     if read_os > 1:
         block = crop_readout_oversampling(block, expected_nx=n_col_full // read_os,
                                           readout_axis=0, os_factor=read_os)

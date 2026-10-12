@@ -13,10 +13,14 @@ from processing.acquisition import (AcquisitionConflict, LineCat, UnsupportedAcq
 from read_siemens_scans.twix_reading import TwixMeta
 
 
-def header(n_pe, pf=16, dim=2, read_os=2.0, phase_os=0.0, ref_mode=1, fov=(160.0, 160.0)):
+def header(n_pe, pf=16, dim=2, read_os=2.0, phase_os=0.0, ref_mode=1, fov=(160.0, 160.0),
+           fourier_cols=None):
+    meas = {"flReadoutOSFactor": read_os, "flPhaseOS": phase_os}
+    if fourier_cols:
+        meas["iNoOfFourierColumns"] = float(fourier_cols)
     return {
         "Config": {"SequenceFileName": "%SiemensSeq%\\se"},
-        "Meas": {"flReadoutOSFactor": read_os, "flPhaseOS": phase_os},
+        "Meas": meas,
         "MeasYaps": {
             "sKSpace": {"lPhaseEncodingLines": n_pe, "ucPhasePartialFourier": pf,
                         "ucDimension": dim},
@@ -105,6 +109,21 @@ def test_asymmetric_echo_padding_places_samples_after_the_gap():
     assert asm.kspace.shape == (64, 16, 1)
     assert np.all(asm.kspace[:11] == 0)
     assert np.array_equal(asm.kspace[11:, :, 0], raw[:, 0, :].T.astype(np.complex128))
+
+
+def test_fourier_matrix_from_header_drops_samples_beyond_it():
+    """Like the lab's T1 SE: 512 samples, echo at 188, 512 Fourier columns — the
+    matrix stays 512 (base resolution × OS), centred on the echo; the 68
+    samples past it are not used."""
+    ncol, ccol = 64, 23
+    raw = reader_array(16, 1, ncol, np.arange(16), dc_row=8)
+    meta = TwixMeta(header=header(16, read_os=1.0, fourier_cols=64), axes=["Lin", "Cha", "Col"],
+                    lines=line_table(np.arange(16), 8, ccol, ncol))
+    asm = assemble_siemens(raw, meta)
+    assert asm.kspace.shape == (64, 16, 1)                  # not 2·max(23, 41) = 82
+    assert np.all(asm.kspace[:9] == 0)                      # 32 − 23 early samples missing
+    np.testing.assert_array_equal(asm.kspace[9:, :, 0], raw[:, 0, :55].T.astype(np.complex128))
+    assert any("9 readout samples" in w for w in asm.facts.warnings)
 
 
 def test_finalize_image_crops_phase_oversampling():
