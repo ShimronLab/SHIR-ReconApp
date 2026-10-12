@@ -52,6 +52,19 @@ _backend_mode = "auto"
 # tissue on lower-SNR data and leaves signal-void holes in the recon. Match BART.
 ESPIRIT_CROP = 0.8
 
+# Every other engine parameter is passed explicitly too, so results never
+# depend on a library default. The values reproduce what each engine used
+# before (verified bit-identical against the defaults):
+#   kernel width 6 — same in both engines;
+#   null-space threshold — BART ecalib -t 0.001, SigPy EspiritCalib 0.02.
+#     NOTE: these differ by 20x. Kept as-is because unifying them changes the
+#     SigPy results behind published comparisons; decide deliberately.
+#   PICS iterations — BART's default is 30 (no -i == -i30), SigPy gets 30.
+ESPIRIT_KERNEL = 6
+ESPIRIT_THRESH_BART = 0.001
+ESPIRIT_THRESH_SIGPY = 0.02
+PICS_ITERS_DEFAULT = 30
+
 
 def set_backend_mode(mode: str) -> None:
     """Set the process-global recon backend mode ('auto' | 'bart' | 'sigpy')."""
@@ -189,6 +202,7 @@ def espirit_maps(
             sens_cfl = os.path.join(tmp, "sens")
             writecfl(ksp_cfl, k4d_norm)
             run_bart("ecalib", f"-r{calib}:{calib}:1", f"-c{crop}", f"-m{num_maps}",
+                     f"-k{ESPIRIT_KERNEL}", f"-t{ESPIRIT_THRESH_BART}",
                      ksp_cfl, sens_cfl)
             return readcfl(sens_cfl)
 
@@ -199,6 +213,7 @@ def espirit_maps(
     ksp_c = _k4d_to_coilfirst(k4d_norm)              # (Ncoils, Nread, Nphase)
     log(f"  sigpy EspiritCalib (calib={calib}, crop={crop})…")
     mps = mr.app.EspiritCalib(ksp_c, calib_width=calib, crop=crop,
+                              kernel_width=ESPIRIT_KERNEL, thresh=ESPIRIT_THRESH_SIGPY,
                               show_pbar=False).run()
     mps = np.asarray(mps)
     return _coilfirst_maps_to_bart(mps)              # (Nread, Nphase, 1, Ncoils)
@@ -217,7 +232,7 @@ def pics(
     l2: bool = False,
     reg: Optional[str] = None,       # None | 'Q' (L2) | 'T' (TV) | 'W' (L1-wavelet)
     lam: float = 0.0,
-    iters: Optional[int] = None,     # None → BART default iterations (no -i flag)
+    iters: Optional[int] = None,     # None → PICS_ITERS_DEFAULT (= BART's own default)
     weights: Optional[np.ndarray] = None,
     log: Optional[Callable[[str], None]] = None,
 ) -> np.ndarray:
@@ -240,6 +255,7 @@ def pics(
       else          -> SenseRecon(lamda = lam if (reg=='Q' or l2) else 0)
     """
     log = log or _noop
+    n_iter = int(iters) if iters else PICS_ITERS_DEFAULT   # same count for both engines
 
     if use_bart():
         with BartTempDir("bart_pics_") as tmp:
@@ -261,8 +277,7 @@ def pics(
                 args += ["-R", f"T:7:0:{lam}"]
             elif reg == "W":
                 args += ["-R", f"W:7:0:{lam}"]
-            if iters is not None:
-                args.append(f"-i{iters}")
+            args.append(f"-i{n_iter}")
             run_bart(*args, ksp_cfl, sens_cfl, recon_cfl)
             return np.squeeze(readcfl(recon_cfl))
 
@@ -272,7 +287,7 @@ def pics(
     mps_c = _maps_to_coilfirst(sens)                 # (Ncoils, Nread, Nphase)
     if weights is None:
         weights = _sampling_mask_2d(k4d_norm)        # restrict data consistency
-    max_iter = int(iters) if iters else 30           # sigpy default when BART used its own
+    max_iter = n_iter
 
     if reg == "W" or l1:
         lamda = lam if lam > 0 else 1e-3

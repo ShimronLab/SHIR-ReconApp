@@ -171,8 +171,9 @@ class ReconWorker(QObject):
                 slice_cb = self._request_slice
 
             # Select the reconstruction engine (BART vs sigpy) for this job.
-            from processing import recon_backend
+            from processing import acquisition, recon_backend
             recon_backend.set_backend_mode(params.get("recon_backend", "auto"))
+            acquisition.set_prewhitening(params.get("prewhiten", True))
             cb(f"Recon engine: {recon_backend.active_backend_label()} "
                f"(mode={recon_backend.get_backend_mode()}, "
                f"BART available={recon_backend.bart_available()})")

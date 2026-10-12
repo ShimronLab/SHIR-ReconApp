@@ -209,6 +209,35 @@ def test_reference_loader_uses_full_grid(siemens_pf_file):
     assert load_reference_rss(siemens_pf_file).shape == (32, 269)
 
 
+def test_noise_whitener_decorrelates_coils():
+    from processing.acquisition import noise_whitener
+    rng = np.random.default_rng(1)
+    mix = np.array([[1.0, 0.0, 0.0], [0.8, 0.6, 0.0], [0.3, 0.5, 0.9]])
+    white = rng.standard_normal((50000, 3)) + 1j * rng.standard_normal((50000, 3))
+    noise = white @ mix.T                                  # correlated coils
+    W, max_corr = noise_whitener(noise)
+    assert max_corr > 0.5
+    y = noise @ W.T                                        # coil c ← Σ_d W[c, d] n_d
+    cov = (y.conj().T @ y / len(y)).T
+    var = np.real(np.diag(noise.conj().T @ noise / len(noise))).mean()
+    assert np.allclose(cov, var * np.eye(3), atol=0.03 * var)
+
+
+def test_prewhitening_applied_with_noise_and_switchable(monkeypatch):
+    import processing.acquisition as acq
+    raw, meta = pf_se()
+    rng = np.random.default_rng(2)
+    meta.noise = (rng.standard_normal((4000, 2)) + 1j * rng.standard_normal((4000, 2))) \
+        @ np.array([[1.0, 0.0], [0.9, 0.4]]).T
+    on = assemble_siemens(raw, meta)
+    assert on.facts["prewhitened"] is True and "prewhitened" in on.facts.summary()
+    monkeypatch.setattr(acq, "PREWHITEN", False)
+    off = assemble_siemens(raw, meta)
+    assert off.facts["prewhitened"] is False
+    assert not np.allclose(on.kspace, off.kspace)
+    assert np.array_equal(on.line_category, off.line_category)   # empty lines stay empty
+
+
 def test_pulseq_and_unreadable_files_keep_the_old_path(monkeypatch):
     assert acquire_cartesian("/no/such/file.dat") is None
     monkeypatch.setattr(utils, "read_twix_header",

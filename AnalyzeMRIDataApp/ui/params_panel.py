@@ -147,8 +147,8 @@ class ParamsPanel(QWidget):
 
         vbox.addWidget(grp_espirit)
 
-        # ── Partial Fourier (lines a Siemens protocol never acquired) ─────────
-        grp_pf = QGroupBox("Partial Fourier (Siemens scans)")
+        # ── Siemens scans: settings for data whose geometry comes from the file ──
+        grp_pf = QGroupBox("Siemens scans (read from the file)")
         form_pf = QFormLayout(grp_pf)
 
         self.combo_pf_method = QComboBox()
@@ -165,7 +165,17 @@ class ParamsPanel(QWidget):
             "Applies to RSS / GRAPPA recons and to the simulator's reference; "
             "SENSE / CS recons treat the lines as unsampled instead."
         )
-        form_pf.addRow("Missing lines:", self.combo_pf_method)
+        form_pf.addRow("Partial-Fourier lines:", self.combo_pf_method)
+
+        self.chk_prewhiten = QCheckBox("Noise prewhitening")
+        self.chk_prewhiten.setChecked(True)
+        self.chk_prewhiten.setToolTip(
+            "Decorrelate the receive coils using the noise-adjust scan stored in "
+            "the file, before any coil combination (RSS, ESPIRiT, SENSE, GRAPPA).\n"
+            "Improves SNR when coil noise is correlated. Siemens scans only; "
+            "the result's Acquisition table states whether it was applied."
+        )
+        form_pf.addRow("", self.chk_prewhiten)
 
         vbox.addWidget(grp_pf)
 
@@ -695,6 +705,7 @@ class ParamsPanel(QWidget):
             "calib_width":  self.spin_calib.value(),
             "espirit_crop": self.dspin_espirit_crop.value(),   # both engines
             "pf_method":    self.combo_pf_method.currentData(),   # zerofill | homodyne | pocs
+            "prewhiten":    self.chk_prewhiten.isChecked(),       # Siemens scans
             "recon_backend": self.combo_backend.currentData(),   # auto | bart | sigpy
             # equispaced
             "equi_method":       self.combo_equi_method.currentData(),

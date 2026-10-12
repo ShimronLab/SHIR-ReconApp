@@ -31,8 +31,37 @@ class Src(str, Enum):
     """Where an acquisition fact came from."""
     HEADER = "protocol header"
     MDH = "per-line header"
+    NOISE = "noise-adjust scan"
     DATA = "inferred from data"
     DERIVED = "derived"
+    SETTING = "app setting"
+
+
+# Coil noise prewhitening for files assembled here (Siemens). Set per job from
+# the parameters panel (like the recon engine); Pulseq files keep their path.
+PREWHITEN = True
+
+
+def set_prewhitening(on: bool) -> None:
+    global PREWHITEN
+    PREWHITEN = bool(on)
+
+
+def noise_whitener(noise: np.ndarray) -> Tuple[np.ndarray, float]:
+    """
+    Coil whitening matrix from noise samples (n_samples, n_coils): W = L⁻¹ with
+    Ψ = L Lᴴ the noise covariance, scaled by √mean(diag Ψ) so image intensity
+    keeps its scale. Returns (W, largest coil correlation coefficient).
+    """
+    noise = np.asarray(noise, dtype=np.complex128)
+    cov = noise.conj().T @ noise / max(noise.shape[0] - 1, 1)   # Ψ_ij = E[n_i* n_j]
+    cov = cov.T                                                 # Ψ_ij = E[n_i n_j*]
+    var = np.real(np.diag(cov))
+    corr = np.abs(cov) / np.sqrt(np.outer(var, var))
+    np.fill_diagonal(corr, 0.0)
+    L = np.linalg.cholesky(cov)
+    W = np.linalg.inv(L) * np.sqrt(var.mean())
+    return W, float(corr.max()) if corr.size else 0.0
 
 
 @dataclass(frozen=True)
@@ -102,6 +131,8 @@ class AcqFacts:
             parts.append(f"readout OS {self['read_os']}×")
         if self.get("asymmetric_echo"):
             parts.append("asymmetric echo")
+        if self.get("prewhitened"):
+            parts.append("prewhitened")
         return " · ".join(parts)
 
 
@@ -286,6 +317,22 @@ def assemble_siemens(
             facts.warnings.append(f"Separate reference scan (mode {ref_mode}) not used yet.")
     facts.set("ref_mode", {1: "none", 2: "integrated", 4: "separate"}.get(ref_mode, ref_mode),
               Src.HEADER, "MeasYaps.sPat.ucRefScanMode")
+
+    # ── Coil noise prewhitening (linear in the coils: empty lines stay zero) ──
+    noise = getattr(meta, "noise", None)
+    if not PREWHITEN:
+        facts.set("prewhitened", False, Src.SETTING, "switched off")
+    elif noise is None or noise.ndim != 2 or noise.shape[1] != n_coils:
+        facts.set("prewhitened", False, Src.NOISE, "no matching noise-adjust data in the file")
+    else:
+        try:
+            W, max_corr = noise_whitener(noise)
+        except np.linalg.LinAlgError:
+            facts.set("prewhitened", False, Src.NOISE, "noise covariance not positive definite")
+        else:
+            kspace = np.tensordot(kspace, W, axes=([2], [1]))      # coil c ← Σ_d W[c, d] k_d
+            facts.set("prewhitened", True, Src.NOISE,
+                      f"{noise.shape[0]} samples; largest coil correlation {max_corr:.2f}")
 
     # ── Line categories ───────────────────────────────────────────────────────
     centre = n_full // 2

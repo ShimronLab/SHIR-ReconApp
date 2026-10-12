@@ -34,6 +34,7 @@ class TwixMeta:
     refscan_axes  : dimension names of `refscan`.
     refscan_lines : Lin / Sli of every calibration readout.
     has_noise     : the file contains noise-adjust readouts.
+    noise         : noise-adjust samples as (n_samples, n_coils), or None.
     """
     header: dict
     axes: List[str]
@@ -42,6 +43,7 @@ class TwixMeta:
     refscan_axes: List[str] = field(default_factory=list)
     refscan_lines: Dict[str, np.ndarray] = field(default_factory=dict)
     has_noise: bool = False
+    noise: Optional[np.ndarray] = None
 
 
 def read_raw_twix_data(twix_path: str, fix_oversampling: bool = False, *, with_meta: bool = False):
@@ -83,7 +85,7 @@ def read_raw_twix_data(twix_path: str, fix_oversampling: bool = False, *, with_m
     kspace_squeezed = kspace[:].squeeze() # Removes any remaining singleton axes
     if not with_meta:
         return kspace_squeezed, active_image_dims
-    return kspace_squeezed, active_image_dims, _build_meta(twix, mapped[-1], kspace)
+    return kspace_squeezed, active_image_dims, _build_meta(twix, mapped, kspace)
 
 
 _LINE_COUNTERS = ("Lin", "Sli", "Par", "Eco", "Rep", "Set", "Ave")
@@ -94,9 +96,27 @@ def _squeezed_axes(arr) -> List[str]:
     return [name for name, n in zip(arr._dim_order, arr.shape) if n > 1]
 
 
-def _build_meta(twix, mapped_meas, image_arr) -> TwixMeta:
+def _noise_samples(mapped) -> Optional[np.ndarray]:
+    """Noise-adjust readouts (usually in the first, adjustment measurement)
+    as (n_samples, n_coils), or None."""
+    for meas in mapped:
+        if "noise" not in meas:
+            continue
+        arr = meas["noise"]
+        arr.flags["remove_os"] = False
+        data = np.asarray(arr[:]).squeeze()
+        axes = _squeezed_axes(arr)
+        if "Cha" not in axes:
+            continue
+        data = np.moveaxis(data, axes.index("Cha"), -1)
+        return data.reshape(-1, data.shape[-1])
+    return None
+
+
+def _build_meta(twix, mapped, image_arr) -> TwixMeta:
     """Collect the header and per-readout MDH fields of the image measurement."""
     meas = twix[-1]
+    mapped_meas = mapped[-1]
     rows = {k: [] for k in (*_LINE_COUNTERS, "CenterLin", "CenterCol", "ncol", "ref")}
     ref_rows = {"Lin": [], "Sli": []}
     for mdb in meas["mdb"]:
@@ -131,4 +151,5 @@ def _build_meta(twix, mapped_meas, image_arr) -> TwixMeta:
         refscan_axes=refscan_axes,
         refscan_lines={k: np.asarray(v) for k, v in ref_rows.items()},
         has_noise=has_noise,
+        noise=_noise_samples(mapped) if has_noise else None,
     )
