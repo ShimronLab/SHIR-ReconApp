@@ -145,6 +145,20 @@ class ParamsPanel(QWidget):
         )
         form_espirit.addRow("ESPIRiT crop:", self.dspin_espirit_crop)
 
+        self.dspin_espirit_thresh = QDoubleSpinBox()
+        self.dspin_espirit_thresh.setRange(0.0, 0.5)
+        self.dspin_espirit_thresh.setDecimals(4)
+        self.dspin_espirit_thresh.setSingleStep(0.001)
+        self.dspin_espirit_thresh.setValue(0.0)
+        self.dspin_espirit_thresh.setSpecialValueText("Engine default")
+        self.dspin_espirit_thresh.setToolTip(
+            "ESPIRiT null-space (calibration-matrix singular value) threshold.\n"
+            "Engine default: BART ecalib uses 0.001, sigpy EspiritCalib 0.02 —\n"
+            "one reason the two engines' coil maps differ slightly.\n"
+            "Set a value to use the same threshold in BOTH engines."
+        )
+        form_espirit.addRow("ESPIRiT threshold:", self.dspin_espirit_thresh)
+
         vbox.addWidget(grp_espirit)
 
         # ── Siemens scans: settings for data whose geometry comes from the file ──
@@ -734,6 +748,8 @@ class ParamsPanel(QWidget):
             "traj_margin":  self.dspin_traj_margin.value(),
             "calib_width":  self.spin_calib.value(),
             "espirit_crop": self.dspin_espirit_crop.value(),   # both engines
+            # 0 → each engine's own default (BART 0.001, sigpy 0.02)
+            "espirit_thresh": self.dspin_espirit_thresh.value() or None,
             "pf_method":    self.combo_pf_method.currentData(),   # zerofill | homodyne | pocs
             "prewhiten":    self.chk_prewhiten.isChecked(),       # Siemens scans
             "recon_backend": self.combo_backend.currentData(),   # auto | bart | sigpy

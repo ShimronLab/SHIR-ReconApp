@@ -173,6 +173,7 @@ class ReconWorker(QObject):
             # Select the reconstruction engine (BART vs sigpy) for this job.
             from processing import acquisition, recon_backend, seq_geometry
             recon_backend.set_backend_mode(params.get("recon_backend", "auto"))
+            recon_backend.set_espirit_threshold(params.get("espirit_thresh"))
             acquisition.set_prewhitening(params.get("prewhiten", True))
             seq_geometry.set_library_dir(params.get("seq_library_dir") or None)
             cb(f"Recon engine: {recon_backend.active_backend_label()} "

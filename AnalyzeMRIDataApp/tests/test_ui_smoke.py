@@ -61,6 +61,7 @@ def test_get_params_contract(main_window):
         "sim_kernel_size", "sim_grappa_lambda", "sim_sense_iters",
         "sim_sense_lambda", "sim_swap_pe_read", "save_dir", "gen_pdf",
         "save_npy", "espirit_crop", "pf_method", "prewhiten", "seq_library_dir",
+        "espirit_thresh",
     }
     missing = required - set(p)
     assert not missing, f"get_params() lost keys: {missing}"

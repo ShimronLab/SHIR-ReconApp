@@ -50,6 +50,23 @@ def test_bart_commands_carry_every_parameter(monkeypatch):
     assert pics[0] == "pics" and f"-i{recon_backend.PICS_ITERS_DEFAULT}" in pics
 
 
+def test_espirit_threshold_default_per_engine_or_one_for_both(monkeypatch):
+    assert recon_backend.espirit_threshold(bart=True) == recon_backend.ESPIRIT_THRESH_BART
+    assert recon_backend.espirit_threshold(bart=False) == recon_backend.ESPIRIT_THRESH_SIGPY
+    calls = []
+    monkeypatch.setattr(recon_backend, "use_bart", lambda: True)
+    monkeypatch.setattr(recon_backend, "run_bart", lambda *args, **kw: calls.append(args))
+    monkeypatch.setattr(recon_backend, "readcfl", lambda path: np.zeros((4, 4, 1, 2), np.complex64))
+    try:
+        recon_backend.set_espirit_threshold(0.005)
+        assert recon_backend.espirit_threshold(bart=False) == 0.005
+        recon_backend.espirit_maps(np.ones((4, 4, 1, 2), np.complex64), 4, crop=0.8)
+        assert "-t0.005" in calls[0]
+    finally:
+        recon_backend.set_espirit_threshold(None)
+    assert recon_backend.espirit_threshold(bart=True) == recon_backend.ESPIRIT_THRESH_BART
+
+
 @pytest.mark.bart
 def test_bart_and_sigpy_sense_agree_on_phantom():
     _, _, ksp = make_phantom(96, 96, 8)

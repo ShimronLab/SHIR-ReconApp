@@ -57,13 +57,29 @@ ESPIRIT_CROP = 0.8
 # before (verified bit-identical against the defaults):
 #   kernel width 6 — same in both engines;
 #   null-space threshold — BART ecalib -t 0.001, SigPy EspiritCalib 0.02.
-#     NOTE: these differ by 20x. Kept as-is because unifying them changes the
-#     SigPy results behind published comparisons; decide deliberately.
+#     These differ by 20x; each engine keeps its own default unless the user
+#     sets one threshold for both (set_espirit_threshold).
 #   PICS iterations — BART's default is 30 (no -i == -i30), SigPy gets 30.
 ESPIRIT_KERNEL = 6
 ESPIRIT_THRESH_BART = 0.001
 ESPIRIT_THRESH_SIGPY = 0.02
 PICS_ITERS_DEFAULT = 30
+
+_espirit_thresh: Optional[float] = None       # None → each engine's default
+
+
+def set_espirit_threshold(value: Optional[float]) -> None:
+    """One ESPIRiT null-space threshold for both engines; None or 0 restores
+    each engine's default (BART 0.001, SigPy 0.02)."""
+    global _espirit_thresh
+    _espirit_thresh = float(value) if value else None
+
+
+def espirit_threshold(bart: bool) -> float:
+    """The null-space threshold the given engine will use."""
+    if _espirit_thresh is not None:
+        return _espirit_thresh
+    return ESPIRIT_THRESH_BART if bart else ESPIRIT_THRESH_SIGPY
 
 
 def set_backend_mode(mode: str) -> None:
@@ -202,7 +218,7 @@ def espirit_maps(
             sens_cfl = os.path.join(tmp, "sens")
             writecfl(ksp_cfl, k4d_norm)
             run_bart("ecalib", f"-r{calib}:{calib}:1", f"-c{crop}", f"-m{num_maps}",
-                     f"-k{ESPIRIT_KERNEL}", f"-t{ESPIRIT_THRESH_BART}",
+                     f"-k{ESPIRIT_KERNEL}", f"-t{espirit_threshold(bart=True)}",
                      ksp_cfl, sens_cfl)
             return readcfl(sens_cfl)
 
@@ -213,7 +229,7 @@ def espirit_maps(
     ksp_c = _k4d_to_coilfirst(k4d_norm)              # (Ncoils, Nread, Nphase)
     log(f"  sigpy EspiritCalib (calib={calib}, crop={crop})…")
     mps = mr.app.EspiritCalib(ksp_c, calib_width=calib, crop=crop,
-                              kernel_width=ESPIRIT_KERNEL, thresh=ESPIRIT_THRESH_SIGPY,
+                              kernel_width=ESPIRIT_KERNEL, thresh=espirit_threshold(bart=False),
                               show_pbar=False).run()
     mps = np.asarray(mps)
     return _coilfirst_maps_to_bart(mps)              # (Nread, Nphase, 1, Ncoils)

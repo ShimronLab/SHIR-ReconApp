@@ -425,6 +425,8 @@ Outputs (per result tab — 3 × 3 grid):
 | Common | Traj margin (px) | 1.0 | Band, Poisson | Margin subtracted from N/2 when scaling trajectory |
 | Common | ESPIRiT calib width | 24 | Band, Poisson, FullySamp (SENSE), Simulator (SENSE) | Calibration region width for ESPIRiT sensitivity maps |
 | Common | **Recon engine** | Auto | all BART/sigpy methods | Auto (BART if available, else sigpy) / Force BART / Force sigpy |
+| ESPIRiT | ESPIRiT crop | 0.8 | all ESPIRiT methods | Eigenvalue mask threshold, same in both engines |
+| ESPIRiT | ESPIRiT threshold | Engine default | all ESPIRiT methods | Null-space threshold; *Engine default* = BART 0.001 / sigpy 0.02, a value applies to both |
 | Siemens scans | Partial-Fourier lines | Zero-fill | all Cartesian (Siemens product) | Zero-fill / Homodyne / POCS for lines a partial-Fourier protocol never acquired. No effect on Pulseq scans |
 | Siemens scans | Noise prewhitening | On | all Cartesian (Siemens product) | Decorrelate coils with the file's noise-adjust scan before coil processing |
 | Pulseq scans | .seq library | — | Pulseq scans | Extra folder searched for the played `.seq` (cross-check only; the recon is unchanged) |
@@ -622,9 +624,9 @@ TWIX reader, so no scanner data is required for the bulk of the suite.
   ky on a half-line grid or one line shifted, which leaves magnitude images unchanged. A TSE
   whose echo order the legacy path cannot infer (e.g. 266 readouts, not a multiple of the
   echo-train length) is reconstructed scrambled even though its `.seq` gives the exact order.
-- **ESPIRiT thresholds differ between engines:** BART `ecalib` uses `-t 0.001`, sigpy
-  `EspiritCalib` uses `thresh 0.02` (each library's default, now passed explicitly). This is one
-  source of the small BART/sigpy differences.
+- **ESPIRiT thresholds differ between engines by default:** BART `ecalib` uses `-t 0.001`, sigpy
+  `EspiritCalib` uses `thresh 0.02` (each library's default, passed explicitly). This is one
+  source of the small BART/sigpy differences; set **ESPIRiT threshold** to use one value in both.
 - **TSE folders** (`TSE_1mm`, `TSE_3mm`) contain Band data only; Fully-Sampled, Equispaced and
   Poisson-Disc scan types will not appear for these folders.
 - Intermediate BART `.cfl` / `.hdr` files are written to a **temporary directory** and deleted

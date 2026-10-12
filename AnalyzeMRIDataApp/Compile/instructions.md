@@ -316,6 +316,8 @@ either engine and always work. The log prints which engine ran for each job.
 | Common | Traj margin (px) | Band, Poisson | Keeps trajectory inside the grid |
 | Common | ESPIRiT calib width | all ESPIRiT/SENSE | Calibration region for sensitivity maps |
 | Common | **Recon engine** | all BART/sigpy methods | Auto / Force BART / Force sigpy |
+| ESPIRiT | ESPIRiT crop | all ESPIRiT methods | eigenvalue mask (0.8), same in both engines |
+| ESPIRiT | ESPIRiT threshold | all ESPIRiT methods | *Engine default* (BART 0.001, sigpy 0.02) or one value for both engines |
 | Siemens scans | Partial-Fourier lines | Siemens product scans | Zero-fill (default) / Homodyne / POCS for lines a partial-Fourier protocol never acquired |
 | Siemens scans | Noise prewhitening | Siemens product scans | decorrelate coils with the file's noise scan (default on) |
 | Pulseq scans | .seq library | Pulseq scans | folder with the lab's `.seq` files, used to cross-check line placement (log only) |
