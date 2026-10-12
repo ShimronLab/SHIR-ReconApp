@@ -86,9 +86,15 @@ def _log(msg: str) -> None:
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _probe_num_slices(dat_path: str) -> int:
-    """Return the number of slices in a TWIX file (1 for single-slice 'my' data)."""
-    from read_siemens_scans.twix_reading import read_raw_twix_data
+    """Return the number of slices in a TWIX file (1 for single-slice 'my' data).
 
+    Siemens headers state the slice count, so only the header is read. Pulseq
+    headers carry a placeholder, so for those the data itself is checked."""
+    from processing.utils import probe_num_slices, sequence_family
+    if sequence_family(dat_path) == "siemens":
+        return probe_num_slices(dat_path)
+
+    from read_siemens_scans.twix_reading import read_raw_twix_data
     kspace_raw, _ = read_raw_twix_data(str(dat_path), fix_oversampling=False)
     if kspace_raw.ndim == 4:
         return int(kspace_raw.shape[0])

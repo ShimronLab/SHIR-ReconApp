@@ -35,15 +35,8 @@ def _parse_r_from_filename(dat_path: str) -> Optional[int]:
     return int(m.group(1)) if m else None
 
 
+from .imaging import centre_block, espirit_normalise, ifft2c as _ifft2c
 from .utils import ensure_twix_importable as _add_twix_path
-
-
-def _ifft2c(ks: np.ndarray) -> np.ndarray:
-    """Centred 2-D IFFT over axes 0 and 1."""
-    return np.fft.ifftshift(
-        np.fft.ifft2(np.fft.fftshift(ks, axes=(0, 1)), axes=(0, 1)),
-        axes=(0, 1),
-    )
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -166,8 +159,7 @@ def _build_grappa_mask_computed(
     pe_mask[idx_right] = True
     pe_mask[idx_left]  = True
 
-    acs_start = center_idx - acs_lines // 2
-    acs_end   = center_idx + (acs_lines - acs_lines // 2)
+    acs_start, acs_end = centre_block(n_phase, acs_lines)
     pe_mask[acs_start:acs_end] = True
 
     log(f"  Computed mask: {pe_mask.sum()} / {n_phase} lines  (R={r_factor}, ACS={acs_lines})")
@@ -267,23 +259,15 @@ def reconstruct_equispaced(
 
     _add_twix_path()
     from read_siemens_scans.twix_reading import read_raw_twix_data
-    from .utils import crop_readout_oversampling
+    from .utils import crop_readout_oversampling, select_slice
 
     # ── 1. Read k-space ───────────────────────────────────────────────────────
     log(f"Reading TWIX data: {Path(dat_path).name}")
     kspace_raw, _ = read_raw_twix_data(str(dat_path), fix_oversampling=False)
     # Shape: (Nacq_PE, Ncoils, Nreadout) — or (Nslices, Nacq_PE, Ncoils, Nreadout) for multi-slice
     log(f"  Raw shape: {kspace_raw.shape}")
-    _refscan_sl = None   # saved slice index for refscan loading below
-    if kspace_raw.ndim == 4:
-        n_slices = kspace_raw.shape[0]
-        if slice_selector_cb is not None:
-            sl_idx = int(slice_selector_cb(n_slices))
-        else:
-            sl_idx = n_slices // 2
-        log(f"  Multi-slice scan ({n_slices} slices) — using slice {sl_idx}")
-        kspace_raw = kspace_raw[sl_idx]
-        _refscan_sl = sl_idx
+    # The chosen slice index is kept for loading the matching reference/refscan slice.
+    kspace_raw, _refscan_sl = select_slice(kspace_raw, slice_selector_cb, log)
     n_acq, n_coils, _n_readout_raw = kspace_raw.shape
 
     # Determine the true PE matrix size from the fully-sampled reference scan.
@@ -342,8 +326,7 @@ def reconstruct_equispaced(
 
     # ── 2. Build PE mask ──────────────────────────────────────────────────────
     log("Building sampling mask…")
-    acs_start = n_phase // 2 - acs_lines // 2
-    acs_end   = n_phase // 2 + (acs_lines - acs_lines // 2)
+    acs_start, acs_end = centre_block(n_phase, acs_lines)
 
     # The JSON trajectory files were generated for the custom sequences only.
     # Siemens scans (filename prefixed with 'siemens') have no matching JSON, so
@@ -385,9 +368,7 @@ def reconstruct_equispaced(
             acs_end   = int(acquired_pe_idx[dense_positions[-1]]) + 2  # inclusive → exclusive
         else:
             # Fallback: use hardcoded ACS bounds from params
-            centre    = n_phase // 2
-            acs_start = centre - acs_lines // 2
-            acs_end   = centre + (acs_lines - acs_lines // 2)
+            acs_start, acs_end = centre_block(n_phase, acs_lines)
         log(f"  ACS bounds from JSON mask: [{acs_start}, {acs_end})")
     else:
         pe_mask, acquired_pe_idx, acs_start, acs_end = _build_grappa_mask_computed(
@@ -415,8 +396,7 @@ def reconstruct_equispaced(
             # (including zeros for unacquired lines), so n_acq IS the full PE
             # matrix dimension, not just the acquired subset.
             n_phase   = n_acq
-            acs_start = max(0, n_phase // 2 - acs_lines // 2)
-            acs_end   = min(n_phase, n_phase // 2 + (acs_lines - acs_lines // 2))
+            acs_start, acs_end = centre_block(n_phase, acs_lines, clamp=True)
             pe_mask   = np.ones(n_phase, dtype=bool)   # refined below from data energy
 
     # ── 3. Place acquired lines into full k-space ─────────────────────────────────────────────
@@ -611,14 +591,7 @@ def reconstruct_equispaced(
             log("Computing ESPIRiT sensitivity maps for optimal coil combination…")
             try:
                 k4d = full_kspace[:, :, np.newaxis, :].astype(np.complex64)
-                try:
-                    import sigpy as sp
-                    img_tmp = sp.rss(sp.ifft(k4d, axes=(0, 1)), axes=-1)
-                    scale   = float(np.percentile(np.abs(img_tmp).ravel(), 95))
-                except Exception:
-                    scale = float(np.max(np.abs(k4d)))
-                scale = max(scale, 1e-12)
-                k4d_norm = (k4d / scale).astype(np.complex64)
+                k4d_norm = espirit_normalise(k4d)[0].astype(np.complex64)
 
                 actual_calib = acs_end - acs_start
                 log(f"  ESPIRiT calibration (calib={actual_calib})…")
@@ -648,14 +621,7 @@ def reconstruct_equispaced(
             k4d = full_kspace[:, :, np.newaxis, :].astype(np.complex64)
 
             # Normalise k-space for numerical stability
-            try:
-                import sigpy as sp
-                img_tmp = sp.rss(sp.ifft(k4d, axes=(0, 1)), axes=-1)
-                scale   = float(np.percentile(np.abs(img_tmp).ravel(), 95))
-            except Exception:
-                scale = float(np.max(np.abs(k4d)))
-            scale = max(scale, 1e-12)
-            k4d_norm = k4d / scale
+            k4d_norm, _ = espirit_normalise(k4d)
 
             actual_calib = acs_end - acs_start   # ACS width from JSON/mask
             log(f"  Computing sensitivity maps (ESPIRiT, calib={actual_calib})…")
@@ -697,14 +663,7 @@ def reconstruct_equispaced(
             k4d = full_kspace[:, :, np.newaxis, :].astype(np.complex64)
 
             # Normalise k-space for numerical stability
-            try:
-                import sigpy as sp
-                img_tmp = sp.rss(sp.ifft(k4d, axes=(0, 1)), axes=-1)
-                scale   = float(np.percentile(np.abs(img_tmp).ravel(), 95))
-            except Exception:
-                scale = float(np.max(np.abs(k4d)))
-            scale = max(scale, 1e-12)
-            k4d_norm = k4d / scale
+            k4d_norm, _ = espirit_normalise(k4d)
 
             actual_calib = acs_end - acs_start
             log(f"  ESPIRiT calibration (calib={actual_calib}, maps={espirit_num_maps})…")

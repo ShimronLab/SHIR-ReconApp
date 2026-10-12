@@ -32,15 +32,8 @@ from .utils import (
 )
 
 
+from .imaging import espirit_normalise, ifft2c as _ifft2c
 from .utils import ensure_twix_importable as _add_twix_path
-
-
-def _ifft2c(ks: np.ndarray) -> np.ndarray:
-    """Centred 2-D IFFT over axes 0 (readout) and 1 (phase)."""
-    return np.fft.ifftshift(
-        np.fft.ifft2(np.fft.fftshift(ks, axes=(0, 1)), axes=(0, 1)),
-        axes=(0, 1),
-    )
 
 
 def _centered_fft2(img: np.ndarray) -> np.ndarray:
@@ -269,14 +262,7 @@ def reconstruct_poisson(
 
     k4d = full_k[:, :, np.newaxis, :]                          # (read, phase, 1, coils)
     del full_k
-    try:
-        import sigpy as sp
-        img_tmp = sp.rss(sp.ifft(k4d, axes=(0, 1)), axes=-1)
-        scale = float(np.percentile(np.abs(img_tmp).ravel(), 95))
-    except Exception:
-        scale = float(np.max(np.abs(k4d)))
-    scale = max(scale, 1e-12)
-    k4d_norm = k4d / scale
+    k4d_norm, _ = espirit_normalise(k4d)
 
     sens_maps = None
     try:

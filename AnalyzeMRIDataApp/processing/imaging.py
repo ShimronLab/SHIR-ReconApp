@@ -32,6 +32,67 @@ def rss(x: np.ndarray, axis: int = -1) -> np.ndarray:
     return np.sqrt(np.sum(np.abs(x) ** 2, axis=axis))
 
 
+def espirit_normalise(k4d: np.ndarray, *, style: str = "clamp"):
+    """
+    Scale multi-coil k-space so its RSS image's 95th percentile is ~1, which
+    keeps ESPIRiT / PICS numerically stable. Returns ``(k_norm, scale)``.
+
+    ``style`` reproduces the two historical variants exactly (dtype included —
+    numpy 2 promotes complex64 / numpy-float64 to complex128, but not
+    complex64 / Python float):
+
+    * ``"clamp"`` — Python-float scale floored at 1e-12; falls back to
+      ``max|k|`` on any error. Keeps complex64 input complex64.
+    * ``"add"``   — numpy-scalar scale plus 1e-12; falls back to ``max|k|``
+      only when sigpy is missing (``scale`` is then None).
+    """
+    if style == "clamp":
+        try:
+            import sigpy as sp
+            img = sp.rss(sp.ifft(k4d, axes=(0, 1)), axes=-1)
+            scale = float(np.percentile(np.abs(img).ravel(), 95))
+        except Exception:
+            scale = float(np.max(np.abs(k4d)))
+        scale = max(scale, 1e-12)
+        return k4d / scale, scale
+    if style == "add":
+        try:
+            import sigpy as sp
+            img = sp.rss(sp.ifft(k4d, axes=(0, 1)), axes=-1)
+            scale = np.percentile(np.abs(img).ravel(), 95)
+            return k4d / (scale + 1e-12), scale
+        except ImportError:
+            return k4d / (np.max(np.abs(k4d)) + 1e-12), None
+    raise ValueError(f"unknown style {style!r}")
+
+
+def centre_block(n: int, width: int, *, clamp: bool = False):
+    """
+    ``(start, end)`` of a ``width``-line block centred on line ``n // 2`` —
+    the calibration (ACS) region convention used across the app. ``clamp``
+    keeps the block inside ``[0, n)``.
+    """
+    start = n // 2 - width // 2
+    end = n // 2 + (width - width // 2)
+    if clamp:
+        start, end = max(0, start), min(n, end)
+    return start, end
+
+
+def crop_center(arr: np.ndarray, n: int, axis: int) -> np.ndarray:
+    """
+    Keep the central ``n`` samples along ``axis`` (centre convention: index
+    ``size // 2`` stays the centre, as for the centred FFTs above).
+    """
+    size = arr.shape[axis]
+    if n >= size:
+        return arr
+    start = size // 2 - n // 2
+    index = [slice(None)] * arr.ndim
+    index[axis] = slice(start, start + n)
+    return arr[tuple(index)]
+
+
 def norm01(img: np.ndarray) -> np.ndarray:
     """Min-max normalise the magnitude of ``img`` to [0, 1]."""
     arr = np.abs(np.squeeze(img)).astype(float)

@@ -24,15 +24,8 @@ from skimage.metrics import structural_similarity as _ssim
 # Path helpers
 # ─────────────────────────────────────────────────────────────────────────────
 
+from .imaging import centre_block, espirit_normalise, ifft2c as _ifft2c
 from .utils import ensure_twix_importable as _add_twix_path
-
-
-def _ifft2c(ks: np.ndarray) -> np.ndarray:
-    """Centred 2-D IFFT over axes 0 and 1."""
-    return np.fft.ifftshift(
-        np.fft.ifft2(np.fft.fftshift(ks, axes=(0, 1)), axes=(0, 1)),
-        axes=(0, 1),
-    )
 
 
 def _grappa_pad(acs_shape, af, ks):
@@ -104,8 +97,7 @@ def build_equispaced_mask(n: int, R: float, acs_lines: int) -> np.ndarray:
     mask[np.arange(center, -1, -r)] = True
 
     # ACS block (mirrors MATLAB lines acs_start:acs_end)
-    acs_start = max(0, center - acs_lines // 2)
-    acs_end   = min(n, center + (acs_lines - acs_lines // 2))
+    acs_start, acs_end = centre_block(n, acs_lines, clamp=True)
     mask[acs_start:acs_end] = True
 
     return mask
@@ -263,21 +255,14 @@ def reconstruct_retro(
 
     _add_twix_path()
     from read_siemens_scans.twix_reading import read_raw_twix_data
-    from .utils import crop_readout_oversampling
+    from .utils import crop_readout_oversampling, select_slice
 
     # ── 1. Read k-space ───────────────────────────────────────────────────────
     log(f"[Retro Sim] Reading TWIX: {Path(dat_path).name}")
     kspace_raw, _ = read_raw_twix_data(str(dat_path), fix_oversampling=False)
     # Shape: (Nacq_PE, Ncoils, Nreadout) — or (Nslices, Nacq_PE, Ncoils, Nreadout) for multi-slice
     log(f"  Raw shape: {kspace_raw.shape}")
-    if kspace_raw.ndim == 4:
-        n_slices = kspace_raw.shape[0]
-        if slice_selector_cb is not None:
-            sl_idx = int(slice_selector_cb(n_slices))
-        else:
-            sl_idx = n_slices // 2
-        log(f"  Multi-slice scan ({n_slices} slices) — using slice {sl_idx}")
-        kspace_raw = kspace_raw[sl_idx]
+    kspace_raw, _ = select_slice(kspace_raw, slice_selector_cb, log)
     # Shape: (Nacq_PE, Ncoils, Nreadout) — fully sampled, so Nacq_PE == n_phase.
     n_acq, n_coils, _n_readout_raw = kspace_raw.shape
     n_phase = n_acq   # n_acq IS the full PE dimension (all lines present)
@@ -322,15 +307,9 @@ def reconstruct_retro(
         try:
             from .recon_backend import espirit_maps as _emaps, pics as _pics
             _k4d = full_kspace[:, :, np.newaxis, :].astype(np.complex64)
-            try:
-                import sigpy as _sp
-                _sc = float(np.percentile(
-                    np.abs(_sp.rss(_sp.ifft(_k4d, axes=(0, 1)), axes=-1)).ravel(), 95))
-            except Exception:
-                _sc = float(np.max(np.abs(_k4d)))
-            _sc = max(_sc, 1e-12)
-            _maps = _emaps(_k4d / _sc, calib_width, num_maps=1, log=log)
-            _ref = _pics(_k4d / _sc, _maps, soft_sense=True, iters=sense_max_iter, log=log)
+            _k4d_norm, _ = espirit_normalise(_k4d)
+            _maps = _emaps(_k4d_norm, calib_width, num_maps=1, log=log)
+            _ref = _pics(_k4d_norm, _maps, soft_sense=True, iters=sense_max_iter, log=log)
             fully_sampled_image = np.abs(np.squeeze(_ref)).astype(np.float32)
             log("  Using a matched SENSE-combined fully-sampled reference.")
         except Exception as _e:
@@ -351,9 +330,7 @@ def reconstruct_retro(
     log(f"  Mask ({axis_label}): {len(acquired_pe_idx)}/{mask_size} lines  (actual R = {actual_r:.2f}×)")
 
     # ACS bounds — always use the same formula as the mask builders
-    center    = mask_size // 2
-    acs_start = max(0, center - acs_lines // 2)
-    acs_end   = min(mask_size, center + (acs_lines - acs_lines // 2))
+    acs_start, acs_end = centre_block(mask_size, acs_lines, clamp=True)
 
     # ── 4. Apply mask (zero out non-sampled lines) ────────────────────────────
     undersampled_kspace = np.zeros_like(full_kspace)
@@ -456,14 +433,7 @@ def reconstruct_retro(
             from .recon_backend import active_backend_label, espirit_maps, pics
             try:
                 k4d = undersampled_kspace[:, :, np.newaxis, :].astype(np.complex64)
-                try:
-                    import sigpy as sp
-                    img_tmp = sp.rss(sp.ifft(k4d, axes=(0, 1)), axes=-1)
-                    scale   = float(np.percentile(np.abs(img_tmp).ravel(), 95))
-                except Exception:
-                    scale = float(np.max(np.abs(k4d)))
-                scale = max(scale, 1e-12)
-                k4d_norm = k4d / scale
+                k4d_norm, _ = espirit_normalise(k4d)
 
                 actual_calib = acs_end - acs_start
                 log(f"  ESPIRiT (calib={actual_calib}, {active_backend_label()})…")
@@ -487,14 +457,7 @@ def reconstruct_retro(
             from .recon_backend import active_backend_label, espirit_maps, pics
             try:
                 k4d = undersampled_kspace[:, :, np.newaxis, :].astype(np.complex64)
-                try:
-                    import sigpy as sp
-                    img_tmp = sp.rss(sp.ifft(k4d, axes=(0, 1)), axes=-1)
-                    scale   = float(np.percentile(np.abs(img_tmp).ravel(), 95))
-                except Exception:
-                    scale = float(np.max(np.abs(k4d)))
-                scale = max(scale, 1e-12)
-                k4d_norm = k4d / scale
+                k4d_norm, _ = espirit_normalise(k4d)
 
                 actual_calib = acs_end - acs_start
                 log(f"  ESPIRiT calibration (calib={actual_calib}, maps={espirit_num_maps}, "

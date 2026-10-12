@@ -125,6 +125,25 @@ def sequence_family(dat_path: str) -> Optional[str]:
     return None
 
 
+def select_slice(
+    raw: np.ndarray,
+    slice_selector_cb: Optional[Callable[[int], int]] = None,
+    log: Optional[Callable[[str], None]] = None,
+) -> Tuple[np.ndarray, Optional[int]]:
+    """
+    One slice of multi-slice reader output (Nslices, Nacq, Ncoils, Nread):
+    the callback's choice, else the middle slice. 3-D input is returned as is.
+    Returns (array, slice index or None).
+    """
+    if raw.ndim != 4:
+        return raw, None
+    n_slices = raw.shape[0]
+    idx = int(slice_selector_cb(n_slices)) if slice_selector_cb is not None else n_slices // 2
+    if log is not None:
+        log(f"  Multi-slice scan ({n_slices} slices) — using slice {idx}")
+    return raw[idx], idx
+
+
 def probe_num_slices(dat_path: str) -> int:
     """
     Number of slices in a TWIX file, read cheaply from the protocol header only.

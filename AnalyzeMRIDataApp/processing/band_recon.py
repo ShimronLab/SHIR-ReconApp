@@ -18,6 +18,7 @@ from .utils import (
 )
 
 
+from .imaging import espirit_normalise
 from .utils import ensure_twix_importable as _add_twix_path
 
 
@@ -147,13 +148,7 @@ def reconstruct_band(
 
     # ── 7. Normalise k-space ──────────────────────────────────────────────────
     log("Normalising k-space for ESPIRiT…")
-    try:
-        import sigpy as sp
-        image = sp.rss(sp.ifft(cart_kspace, axes=(0, 1)), axes=-1)
-        scale = np.percentile(image.reshape(-1), 95)
-        cart_kspace_norm = cart_kspace / (scale + 1e-12)
-    except ImportError:
-        cart_kspace_norm = cart_kspace / (np.max(np.abs(cart_kspace)) + 1e-12)
+    cart_kspace_norm, _ = espirit_normalise(cart_kspace, style="add")
 
     # ── 8-9. ESPIRiT maps + PICS (SENSE combination) ─────────────────────────
     sens_maps = None

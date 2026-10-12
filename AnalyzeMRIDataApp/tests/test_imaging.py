@@ -7,7 +7,10 @@ values below changes every metric/display in the app and must be deliberate.
 import numpy as np
 from skimage.metrics import structural_similarity as _ssim
 
-from processing.imaging import fft2c, ifft2c, metrics_vs_reference, norm01, rss
+import pytest
+
+from processing.imaging import (centre_block, espirit_normalise, fft2c, ifft2c,
+                                metrics_vs_reference, norm01, rss)
 
 
 def test_ifft2c_fft2c_roundtrip():
@@ -64,3 +67,45 @@ def test_metrics_normalized_by_reference_p95_only():
     assert m2["rmse"] > m1["rmse"]
     m3 = metrics_vs_reference(recon * 5, ref * 5)     # joint scale cancels
     assert abs(m3["rmse"] - m1["rmse"]) < 1e-9
+
+
+def _k4d(dtype):
+    rng = np.random.default_rng(4)
+    k = rng.standard_normal((24, 20, 1, 4)) + 1j * rng.standard_normal((24, 20, 1, 4))
+    return k.astype(dtype)
+
+
+@pytest.mark.parametrize("dtype", [np.complex64, np.complex128])
+def test_espirit_normalise_clamp_matches_inline_formula(dtype):
+    """Byte-identical to the inline code in equispaced/retro/poisson, dtype included."""
+    import sigpy as sp
+    k4d = _k4d(dtype)
+    scale = float(np.percentile(np.abs(sp.rss(sp.ifft(k4d, axes=(0, 1)), axes=-1)).ravel(), 95))
+    expected = k4d / max(scale, 1e-12)
+    got, got_scale = espirit_normalise(k4d, style="clamp")
+    assert got.dtype == expected.dtype == dtype
+    assert np.array_equal(got, expected) and got_scale == max(scale, 1e-12)
+
+
+@pytest.mark.parametrize("dtype", [np.complex64, np.complex128])
+def test_espirit_normalise_add_matches_inline_formula(dtype):
+    """Byte-identical to the inline code in fullysamp/generic/band — including the
+    numpy-scalar promotion of complex64 input to complex128."""
+    import sigpy as sp
+    k4d = _k4d(dtype)
+    scale = np.percentile(np.abs(sp.rss(sp.ifft(k4d, axes=(0, 1)), axes=-1)).ravel(), 95)
+    expected = k4d / (scale + 1e-12)
+    got, _ = espirit_normalise(k4d, style="add")
+    assert got.dtype == expected.dtype
+    assert np.array_equal(got, expected)
+
+
+@pytest.mark.parametrize("n,w,clamp,expected", [
+    (256, 24, False, (116, 140)),
+    (255, 24, False, (115, 139)),
+    (256, 25, False, (116, 141)),
+    (10, 24, False, (-7, 17)),
+    (10, 24, True, (0, 10)),
+])
+def test_centre_block(n, w, clamp, expected):
+    assert centre_block(n, w, clamp=clamp) == expected

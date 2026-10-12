@@ -19,15 +19,8 @@ from typing import Any, Callable, Dict, Optional
 import numpy as np
 
 
+from .imaging import espirit_normalise, ifft2c as _ifft2c
 from .utils import ensure_twix_importable as _add_twix_path
-
-
-def _ifft2c(ks: np.ndarray) -> np.ndarray:
-    """Centred 2-D IFFT over axes 0 (readout) and 1 (phase)."""
-    return np.fft.ifftshift(
-        np.fft.ifft2(np.fft.fftshift(ks, axes=(0, 1)), axes=(0, 1)),
-        axes=(0, 1),
-    )
 
 
 def reconstruct_fullysamp(
@@ -80,7 +73,7 @@ def reconstruct_fullysamp(
 
     _add_twix_path()
     from read_siemens_scans.twix_reading import read_raw_twix_data
-    from .utils import crop_readout_oversampling
+    from .utils import crop_readout_oversampling, select_slice
 
     log(f"Reading TWIX data: {Path(dat_path).name}")
     kspace_raw, _ = read_raw_twix_data(str(dat_path), fix_oversampling=False)
@@ -89,14 +82,7 @@ def reconstruct_fullysamp(
     # Multi-slice Siemens scans return (Nslices, Nacq_PE, Ncoils, Nreadout).
     # Select a single slice before the 3-axis transpose below, otherwise the
     # transpose fails with "axes don't match array".
-    if kspace_raw.ndim == 4:
-        n_slices = kspace_raw.shape[0]
-        if slice_selector_cb is not None:
-            sl_idx = int(slice_selector_cb(n_slices))
-        else:
-            sl_idx = n_slices // 2
-        log(f"  Multi-slice scan ({n_slices} slices) — using slice {sl_idx}")
-        kspace_raw = kspace_raw[sl_idx]
+    kspace_raw, _ = select_slice(kspace_raw, slice_selector_cb, log)
 
     # Twix reader returns (Nacq_PE, Ncoils, Nreadout)
     log(f"  Slice shape (Nacq, Ncoils, Nread): {kspace_raw.shape}")
@@ -149,13 +135,7 @@ def reconstruct_fullysamp(
             del kspace_3d   # free the complex128 array now that k4d is built
 
             # Normalise k-space so ecalib is numerically stable
-            try:
-                import sigpy as sp
-                img_tmp = sp.rss(sp.ifft(k4d, axes=(0, 1)), axes=-1)
-                scale   = np.percentile(np.abs(img_tmp).ravel(), 95)
-                k4d_norm = k4d / (scale + 1e-12)
-            except ImportError:
-                k4d_norm = k4d / (np.max(np.abs(k4d)) + 1e-12)
+            k4d_norm, _ = espirit_normalise(k4d, style="add")
 
             log(f"  Computing sensitivity maps (ESPIRiT, calib={calib_width})…")
             sens_maps = espirit_maps(k4d_norm, calib_width, num_maps=1,

@@ -46,7 +46,9 @@ from .utils import (
 )
 
 
+from .imaging import espirit_normalise, ifft2c as _ifft2c
 from .utils import ensure_twix_importable as _add_twix_path
+from .utils import select_slice
 
 
 def _read_slice_coilfirst(
@@ -60,23 +62,11 @@ def _read_slice_coilfirst(
 
     log(f"Reading TWIX data: {Path(dat_path).name}")
     kspace_raw, _ = read_raw_twix_data(str(dat_path), fix_oversampling=False)
-    if kspace_raw.ndim == 4:                     # (Nslices, Nacq, Ncoils, Nread)
-        n_slices = kspace_raw.shape[0]
-        sl = int(slice_selector_cb(n_slices)) if slice_selector_cb else n_slices // 2
-        log(f"  Multi-slice scan ({n_slices} slices) — using slice {sl}")
-        kspace_raw = kspace_raw[sl]
+    kspace_raw, _ = select_slice(kspace_raw, slice_selector_cb, log)   # (Nslices, …) → one slice
     if kspace_raw.ndim != 3:
         raise ValueError(f"Unexpected raw k-space ndim {kspace_raw.ndim} "
                          f"(shape {kspace_raw.shape}); expected 3-D or 4-D.")
     return np.moveaxis(kspace_raw, 1, 0)          # (Ncoils, Nacq, Nread)
-
-
-def _ifft2c(ks: np.ndarray) -> np.ndarray:
-    """Centred 2-D IFFT over axes 0, 1 (matches fullysamp_recon._ifft2c)."""
-    return np.fft.ifftshift(
-        np.fft.ifft2(np.fft.fftshift(ks, axes=(0, 1)), axes=(0, 1)),
-        axes=(0, 1),
-    )
 
 
 def _raw_rss_result(
@@ -285,13 +275,7 @@ def _reconstruct_cs_pattern(
         log("  [NOTE] k-space looks fully sampled — CS will behave like SENSE.")
 
     # ── Normalise → ESPIRiT → PICS L1-wavelet ────────────────────────────────
-    try:
-        import sigpy as sp
-        img_tmp = sp.rss(sp.ifft(k4d, axes=(0, 1)), axes=-1)
-        scale = np.percentile(np.abs(img_tmp).ravel(), 95)
-        k4d_norm = k4d / (scale + 1e-12)
-    except ImportError:
-        k4d_norm = k4d / (np.max(np.abs(k4d)) + 1e-12)
+    k4d_norm, _ = espirit_normalise(k4d, style="add")
 
     log(f"Computing ESPIRiT sensitivity maps (calib={calib_width})…")
     sens_maps = espirit_maps(k4d_norm, calib_width, num_maps=1,

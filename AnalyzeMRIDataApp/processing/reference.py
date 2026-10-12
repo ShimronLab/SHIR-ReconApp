@@ -25,15 +25,8 @@ def _noop(_msg: str) -> None:
     pass
 
 
+from .imaging import ifft2c as _ifft2c
 from .utils import ensure_twix_importable as _add_twix_path
-
-
-def _ifft2c(ks: np.ndarray) -> np.ndarray:
-    """Centred 2-D IFFT over axes 0 (readout) and 1 (phase)."""
-    return np.fft.ifftshift(
-        np.fft.ifft2(np.fft.fftshift(ks, axes=(0, 1)), axes=(0, 1)),
-        axes=(0, 1),
-    )
 
 
 def _seq_kind(name: str) -> Optional[str]:
