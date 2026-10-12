@@ -352,6 +352,8 @@ def _legacy_geometry(
     if not placed:
         full_kspace[:, acquired_pe_idx, :] = kspace_rearranged
     log(f"  Full k-space shape: {full_kspace.shape}")
+    from .seq_geometry import shadow_check
+    shadow_check(dat_path, acq2line if placed else acquired_pe_idx, n_phase, log)   # logs only
 
     # ── 3a. Auto-refine pe_mask from non-zero row energy (sequential fallback case) ───────
     # When pe_mask is all-True it means the sequential fallback was triggered and

@@ -67,6 +67,7 @@ COLLECT_ALL = [
     "sigpy",
     "pygrappa",
     "twixtools",
+    "pypulseq",
     "skimage",
     "scipy",
     "matplotlib",

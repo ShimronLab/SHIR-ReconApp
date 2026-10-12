@@ -609,13 +609,18 @@ def _read_legacy(dat_path, tse, necho, te1, teeff, slice_selector_cb, log):
     # so un-scramble to true PE order before retrospective masking — otherwise
     # both the reference and the simulated undersampling operate on scrambled
     # k-space. SE/non-TSE → skipped.
-    from .tse_reorder import detect_tse_params, unscramble_rows
+    from .tse_reorder import detect_tse_params, tse_acq_to_line, unscramble_rows
+    rows = np.arange(n_phase)                         # line placement, for the .seq check
     _tse = detect_tse_params(dat_path, tse=tse, necho=necho, te1=te1, teeff=teeff)
     if _tse is not None:
         log(f"  TSE detected — un-scrambling echo order (necho={_tse['necho']}).")
         kspace_raw = unscramble_rows(
             kspace_raw, _tse["necho"], _tse["TE1"], _tse["TEeff"], log_fn=log
         )
+        if n_phase % _tse["necho"] == 0:
+            rows = tse_acq_to_line(n_phase, _tse["necho"], _tse["TE1"], _tse["TEeff"])
+    from .seq_geometry import shadow_check
+    shadow_check(dat_path, rows, n_phase, log)        # logs only (shadow mode)
 
     # Rearrange to (Nreadout, Nphase, Ncoils)
     return np.transpose(kspace_raw, (2, 0, 1)).astype(np.complex128), _tse

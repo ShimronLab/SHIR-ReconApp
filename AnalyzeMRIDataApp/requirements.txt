@@ -20,3 +20,7 @@ sigpy==0.1.27
 pygrappa==0.26.3
 twixtools==0.24
 scikit-image==0.26.0
+# Reads the played Pulseq .seq for line geometry (imported lazily; reads the
+# lab's v1.5.1 files with a version warning). Install with --no-deps so it
+# cannot change the pinned numpy/scipy above.
+pypulseq==1.5.0.post1

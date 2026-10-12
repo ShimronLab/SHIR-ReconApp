@@ -199,13 +199,19 @@ def _read_legacy(dat_path, expected_nx, tse, necho, te1, teeff, slice_selector_c
     # returns lines in echo-train (acquisition) order, not ascending PE order.
     # Reorder each acquired line to its true PE position before the transpose,
     # otherwise the fully-sampled TSE image is scrambled. SE / non-TSE → skipped.
-    from .tse_reorder import detect_tse_params, unscramble_rows
+    from .tse_reorder import detect_tse_params, tse_acq_to_line, unscramble_rows
+    n_acq = kspace_raw.shape[0]
+    rows = np.arange(n_acq)                           # line placement, for the .seq check
     _tse = detect_tse_params(dat_path, tse=tse, necho=necho, te1=te1, teeff=teeff)
     if _tse is not None:
         log(f"  TSE detected — un-scrambling echo order (necho={_tse['necho']}).")
         kspace_raw = unscramble_rows(
             kspace_raw, _tse["necho"], _tse["TE1"], _tse["TEeff"], log_fn=log
         )
+        if n_acq % _tse["necho"] == 0:
+            rows = tse_acq_to_line(n_acq, _tse["necho"], _tse["TE1"], _tse["TEeff"])
+    from .seq_geometry import shadow_check
+    shadow_check(dat_path, rows, n_acq, log)          # logs only (shadow mode)
 
     kspace_3d = np.transpose(kspace_raw, (2, 0, 1)).astype(np.complex128)
     log(f"  Rearranged shape: {kspace_3d.shape}")   # (Nreadout, Nphase, Ncoils)
