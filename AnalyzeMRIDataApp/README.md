@@ -231,7 +231,7 @@ depends on the **sequence family**, read from `Config.SequenceFileName` in the T
 | Family | Geometry comes from | Notes |
 |---|---|---|
 | **Siemens product** | the protocol header + each readout's own tags | Line numbers, k-space centre line/column, partial Fourier, readout and phase oversampling, PAT reference lines, FOV and pixel spacing. Nothing is guessed from the filename. |
-| **Pulseq** | the legacy path (filename, line count, `tse_reorder`, trajectory JSONs) | Pulseq headers carry placeholder protocol values (matrix 128, OS 1, "3D"), so they are **not** used. The played `.seq` is cross-checked in shadow mode (below). |
+| **Pulseq** | the played `.seq` → else the scan's trajectory JSON → else the legacy path (filename, line count, `tse_reorder`) | Pulseq headers carry placeholder protocol values (matrix 128, OS 1, "3D"), so they are **not** used. See [Pulseq: the played `.seq`](#pulseq-the-played-seq). |
 | Unreadable header | the legacy path | |
 
 For product scans the k-space is placed on its **full phase-encode grid** (`lPhaseEncodingLines`,
@@ -271,14 +271,28 @@ after the scan) is never used. Searched, in order:
 1. the `.dat` folder and its parent;
 2. `seq_files/` or any `*_seq/` folder in the `.dat` folder, its parent or grandparent;
 3. the **.seq library** folder set in the *Pulseq scans* parameter group (searched with its
-   sub-folders; remembered between sessions).
+   sub-folders; remembered between sessions);
+4. if still not found, the app **asks** (once per sequence per session) — *Locate .seq…*
+   accepts the file only if its signature matches, and its folder is searched for the rest of
+   the session; *Continue without* moves on to the next source.
 
-With `pypulseq` installed, the `.seq` gives every readout's phase-encode index, the readout
-oversampling and the FOV. **This is shadow mode:** the legacy line placement is still used, and
-a `[SEQ]` log line reports whether it matches the `.seq` (`matches the played .seq exactly`,
-`REVERSED phase-encode direction`, `same lines, different ORDER`, …). Without the `.seq`, or
-without pypulseq, the scan reconstructs exactly as before. `python tools/seq_parity.py` runs
-this comparison over every Pulseq scan.
+The `.seq` (read with `pypulseq`) gives every readout's k-space position, and the lines are
+placed by it the same way as for product scans: the true phase-encode index of every line (so
+any echo-train order, e.g. a centre-out TSE, is placed correctly), the direction of both axes
+(k increasing along the array), the readout oversampling (Δk_phase / Δk_read), the FOV and the
+pixel size. Lines recorded twice keep the first acquisition (filler echoes are dropped, with a
+warning); a scan where every line repeats (averages, unlabelled slices) is not assembled this
+way. Half-line ky grids and lines one step off the grid centre are placed with a linear phase
+only (magnitude unchanged).
+
+**Without the `.seq`**, the trajectory JSON written with the scan (`FullySampled_<tags>.json` /
+`Undersampled<R>equispace(d|s)[_swapPE].json` in the scan folder) carries the same per-line k
+positions — on the lab's data it agrees with the `.seq` line for line. One caveat is handled: a
+JSON shared by an SE and a TSE scan carries the SE order, so for a TSE scan the JSON order is
+compared with the echo-train plan and the one giving the sharper image (lower entropy, by at
+least 0.1 nats) is used. **With neither**, the legacy placement (file name, line count, TSE
+plan) is used and the log says so. `python tools/seq_parity.py` compares the legacy placement
+with the `.seq` for every Pulseq scan.
 
 ### Reference comparability
 
@@ -429,7 +443,7 @@ Outputs (per result tab — 3 × 3 grid):
 | ESPIRiT | ESPIRiT threshold | Engine default | all ESPIRiT methods | Null-space threshold; *Engine default* = BART 0.001 / sigpy 0.02, a value applies to both |
 | Siemens scans | Partial-Fourier lines | Zero-fill | all Cartesian (Siemens product) | Zero-fill / Homodyne / POCS for lines a partial-Fourier protocol never acquired. No effect on Pulseq scans |
 | Siemens scans | Noise prewhitening | On | all Cartesian (Siemens product) | Decorrelate coils with the file's noise-adjust scan before coil processing |
-| Pulseq scans | .seq library | — | Pulseq scans | Extra folder searched for the played `.seq` (cross-check only; the recon is unchanged) |
+| Pulseq scans | .seq library | — | Pulseq scans | Extra folder searched for the played `.seq`, which sets the line geometry |
 | Fully Sampled | Combination mode | RSS | Fully-Sampled | RSS (fast) or ESPIRiT + SENSE coil combination |
 | Equispaced Recon | Method | GRAPPA | Equispaced | GRAPPA / GRAPPA+SENSE / Pure SENSE / CS-SENSE / ESPIRiT / ESPIRiT +L1 / +L2 / +TV / +L1-Wav |
 | Equispaced Recon | Mask method | analytical | Equispaced | Build PE mask analytically (R/ACS) or from the data's sampling pattern |
@@ -522,13 +536,14 @@ AnalyzeMRIDataApp/
 │   │                             (Cartesian RSS / NUFFT JSON / radial / CS pattern)
 │   ├── reference.py           ← load_reference_rss / compare_to_reference
 │   │                             (shared fully-sampled comparison + comparability gate)
-│   ├── acquisition.py         ← acquire_cartesian(): header/per-readout geometry for
-│   │                             Siemens scans → full-grid k-space, line categories,
-│   │                             facts with sources; prewhitening; finalize_image()
+│   ├── acquisition.py         ← acquire_cartesian(): full-grid k-space from the header
+│   │                             (Siemens) or the played .seq / trajectory JSON (Pulseq),
+│   │                             line categories, facts with sources; prewhitening;
+│   │                             finalize_image()
 │   ├── partial_fourier.py     ← pf_fill(): zero-fill / homodyne / POCS
-│   ├── seq_geometry.py        ← played-.seq lookup by signature + pypulseq line
-│   │                             geometry (shadow-mode cross-check for Pulseq scans)
-│   ├── tse_reorder.py         ← Pulseq TSE echo-train un-scrambling
+│   ├── seq_geometry.py        ← played-.seq lookup by signature (+ asking the user),
+│   │                             pypulseq / trajectory-JSON line geometry
+│   ├── tse_reorder.py         ← Pulseq TSE echo-train plan (legacy path, JSON check)
 │   └── retro_undersample.py   ← reconstruct_retro()        — retrospective simulator
 │                                   build_equispaced_mask()  — port of MATLAB function
 │                                   build_vd_mask()          — port of MATLAB function
@@ -590,9 +605,12 @@ SHIR_GOLDEN_DIR=~/shir_golden/<rev> pytest -m golden     # SHIR_GOLDEN_FULL=1 fo
 ```
 
 `--app-root` is the repository root (the folder holding `AnalyzeMRIDataApp/` and
-`read_siemens_scans/`). Each case reports `PASS` (bit-identical), `PASS~` (within tolerance), `SAME-ERROR` or `FAIL`;
-any Pulseq `FAIL` exits non-zero. Siemens product cases are reported as `CHANGED`, since the
-header-driven geometry is meant to change them.
+`read_siemens_scans/`). Each case reports `PASS` (bit-identical), `PASS~` (within tolerance),
+`SAME-ERROR`, `MIRRORED`, `CHANGED` or `FAIL`. A Pulseq case still on the legacy path must
+match (any `FAIL` exits non-zero); a Pulseq case now placed by its `.seq`/JSON is `MIRRORED`
+when it is the baseline mirrored along phase encode (the legacy placement had the direction
+reversed) and `CHANGED` otherwise; Siemens product cases are `CHANGED` when the header-driven
+geometry changed them.
 
 Tests run headless (`QT_QPA_PLATFORM=offscreen`, matplotlib `Agg`); Qt settings are
 redirected to a temp dir so they never touch your real preferences. The synthetic
@@ -616,14 +634,13 @@ TWIX reader, so no scanner data is required for the bulk of the suite.
   scan still use the legacy geometry. Expect differences from the scanner's own DICOM images:
   the scanner also applies filters, 2-D distortion correction, prescan normalise and
   interpolation, which SHIR does not.
-- **Pulseq scans** keep the legacy geometry (filename + line count + trajectory JSON); the
-  played `.seq` is only cross-checked (`tools/seq_parity.py`). On the lab's scans the newer
-  sequences match exactly; the older SE ("band") sequences and the `swapPE` scans are placed
-  with the phase-encode direction **reversed** (a mirrored image; recon and reference are
-  mirrored alike, and reference auto-orientation handles mixed pairs); some sequences sample
-  ky on a half-line grid or one line shifted, which leaves magnitude images unchanged. A TSE
-  whose echo order the legacy path cannot infer (e.g. 266 readouts, not a multiple of the
-  echo-train length) is reconstructed scrambled even though its `.seq` gives the exact order.
+- **Pulseq scans without their `.seq` or trajectory JSON** fall back to the legacy placement
+  (file name + line count + TSE plan). Compared with the `.seq` (`tools/seq_parity.py`), that
+  placement is right for the lab's newer sequences, but **mirrored** along phase encode for the
+  older SE ("band") sequences and the `swapPE` scans, and wrong for a TSE whose echo order it
+  cannot infer (e.g. 266 readouts, not a multiple of the echo-train length). Keep every scan's
+  `.seq`. Pulseq scans are not prewhitened (no noise-adjust data); multi-slice Pulseq scans are
+  placed by the `.seq` only when every slice has the same line pattern.
 - **ESPIRiT thresholds differ between engines by default:** BART `ecalib` uses `-t 0.001`, sigpy
   `EspiritCalib` uses `thresh 0.02` (each library's default, passed explicitly). This is one
   source of the small BART/sigpy differences; set **ESPIRiT threshold** to use one value in both.
@@ -634,9 +651,9 @@ TWIX reader, so no scanner data is required for the bulk of the suite.
 - WSL2 on Windows 11 supports **WSLg** natively. Older setups require VcXsrv with
   `export DISPLAY=:0` in the WSL shell before running.
 - GRAPPA reconstruction assumes a **regular equispaced** under-sampling pattern — it is *not* tied
-  to a fixed acceleration. The R-factor comes from the acquired data (R is parsed from the filename,
-  e.g. `equispaced_R4`) and must match the **R-factor** in the parameter panel and the accompanying
-  `Undersampled<R>equispaced.json`. Non-equispaced (e.g. variable-density) patterns are better served
+  to a fixed acceleration. With a `.seq`, trajectory JSON or Siemens header, the mask, R and
+  calibration block are measured from the file. Only on the legacy path does R come from the
+  filename (e.g. `equispaced_R4`), and it must then match the **R-factor** in the parameter panel. Non-equispaced (e.g. variable-density) patterns are better served
   by the SENSE/CS methods; the retrospective simulator lets you pick R (and mask type) freely.
 - The **Retrospective Undersampling Simulator** requires the selected file to be detected as
   **Fully-Sampled** type. It does not use any JSON trajectory file — the mask is synthesised

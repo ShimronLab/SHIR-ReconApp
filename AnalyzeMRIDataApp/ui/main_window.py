@@ -79,6 +79,7 @@ class ReconWorker(QObject):
     finished              = pyqtSignal()
     slice_selection_needed = pyqtSignal(int)       # n_slices — request dialog on main thread
     mask_fallback_needed  = pyqtSignal()           # no JSON traj — request mask-choice dialog
+    seq_file_needed       = pyqtSignal(dict)       # played .seq not found — ask where it is
 
     def __init__(self, job: Dict[str, Any], params: Dict[str, Any]):
         super().__init__()
@@ -89,11 +90,29 @@ class ReconWorker(QObject):
         self._slice_choice: Optional[int] = None
         self._mask_event   = threading.Event()
         self._mask_choice: Optional[str] = None
+        self._seq_event    = threading.Event()
+        self._seq_choice: Optional[str] = None
 
     def abort(self) -> None:
         self._abort = True
         self._slice_event.set()  # unblock if waiting for slice selection
         self._mask_event.set()   # unblock if waiting for mask-fallback choice
+        self._seq_event.set()    # unblock if waiting for a .seq file
+
+    def set_seq_choice(self, path: Optional[str]) -> None:
+        """Called from the main thread to unblock _request_seq_file()."""
+        self._seq_choice = path
+        self._seq_event.set()
+
+    def _request_seq_file(self, info: Dict[str, Any]) -> Optional[str]:
+        """Block the worker thread and ask the main thread to locate the .seq."""
+        self._seq_event.clear()
+        self._seq_choice = None
+        self.seq_file_needed.emit(info)
+        self._seq_event.wait()
+        if self._abort:
+            raise JobAborted()
+        return self._seq_choice
 
     def set_slice_choice(self, idx: int) -> None:
         """Called from the main thread to unblock _request_slice()."""
@@ -176,6 +195,7 @@ class ReconWorker(QObject):
             recon_backend.set_espirit_threshold(params.get("espirit_thresh"))
             acquisition.set_prewhitening(params.get("prewhiten", True))
             seq_geometry.set_library_dir(params.get("seq_library_dir") or None)
+            seq_geometry.set_seq_request_handler(self._request_seq_file)
             cb(f"Recon engine: {recon_backend.active_backend_label()} "
                f"(mode={recon_backend.get_backend_mode()}, "
                f"BART available={recon_backend.bart_available()})")
@@ -357,6 +377,11 @@ class ReconWorker(QObject):
             )
 
         finally:
+            try:
+                from processing import seq_geometry
+                seq_geometry.set_seq_request_handler(None)   # never call a finished worker
+            except ImportError:
+                pass
             self.finished.emit()
 
 
@@ -673,6 +698,7 @@ class MainWindow(QMainWindow):
         worker.error_signal.connect(self._on_worker_error)
         worker.slice_selection_needed.connect(self._on_slice_selection_needed)
         worker.mask_fallback_needed.connect(self._on_mask_fallback_needed)
+        worker.seq_file_needed.connect(self._on_seq_file_needed)
         worker.finished.connect(thread.quit)
         worker.finished.connect(worker.deleteLater)
         thread.finished.connect(thread.deleteLater)
@@ -746,6 +772,35 @@ class MainWindow(QMainWindow):
         self._log_msg(f"  Mask fallback: {choice}")
         if hasattr(self, "_active_worker") and self._active_worker is not None:
             self._active_worker.set_mask_choice(choice)
+
+    def _on_seq_file_needed(self, info: Dict) -> None:
+        """Main-thread slot: the played .seq of a Pulseq scan was not found."""
+        worker = getattr(self, "_active_worker", None)
+        name = Path(str(info.get("name") or "the sequence")).name
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Question)
+        box.setWindowTitle("Sequence file not found")
+        box.setText(
+            f"This Pulseq scan was acquired with <b>{name}</b>, but that exact file "
+            f"(signature {info.get('signature')}) was not found next to the scan or in "
+            f"the .seq library.<br><br>"
+            "The .seq gives the true position of every k-space line (echo order, "
+            "direction). Without it, the trajectory JSON or the file name and line "
+            "count are used instead.")
+        btn_browse = box.addButton("Locate .seq…", QMessageBox.AcceptRole)
+        box.addButton("Continue without", QMessageBox.RejectRole)
+        box.setDefaultButton(btn_browse)
+        box.exec_()
+        path = None
+        if box.clickedButton() is btn_browse:
+            path, _ = QFileDialog.getOpenFileName(
+                self, f"Locate {name}", str(Path(self._params.get("seq_library_dir") or "~")
+                                             .expanduser()),
+                "Pulseq sequence (*.seq)")
+            path = path or None
+        self._log_msg(f"  .seq: {path}" if path else "  .seq not located — using the fallback.")
+        if worker is not None:
+            worker.set_seq_choice(path)
 
     def _on_worker_error(self, msg: str) -> None:
         self._failed_jobs.append(getattr(self, "_current_job_label", "?"))

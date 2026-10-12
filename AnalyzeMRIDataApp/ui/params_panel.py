@@ -219,9 +219,11 @@ class ParamsPanel(QWidget):
         self.chk_tse_auto.setToolTip(
             "TSE scans are acquired in echo-train order (no LIN label), so the\n"
             "Cartesian recons (Fully-Sampled, Equispaced) must un-scramble each\n"
-            "line to its true PE position. Auto: 'tse' in the filename → necho=16,\n"
-            "contrast t1→echo1 / t2→echo8, TE1=12 ms. NUFFT recons (Band/Poisson)\n"
-            "never need this. Untick to force the overrides below."
+            "line to its true PE position. Used only when the scan's played .seq\n"
+            "and trajectory JSON are not available (they give the exact order).\n"
+            "Auto: 'tse' in the filename → necho=16, contrast t1→echo1 / t2→echo8,\n"
+            "TE1=12 ms. NUFFT recons (Band/Poisson) never need this. Untick to force\n"
+            "the overrides below."
         )
         form_tse.addRow(self.chk_tse_auto)
 
@@ -269,8 +271,10 @@ class ParamsPanel(QWidget):
             "Folder (searched with its sub-folders) holding the lab's .seq files.\n"
             "A Pulseq scan's header names the .seq that was played and its signature;\n"
             "the exact file is looked up by signature next to the scan, in seq_files/\n"
-            "or *_seq/ folders, and then here. It is used to cross-check the line\n"
-            "placement (a [SEQ] line in the log); the reconstruction is unchanged."
+            "or *_seq/ folders, and then here. It sets where every k-space line goes\n"
+            "(echo order, direction, oversampling, FOV). If it is not found you are\n"
+            "asked to locate it; without it the trajectory JSON, then the file name\n"
+            "and line count are used."
         )
         btn_seq = QPushButton("…")
         btn_seq.setFixedWidth(28)

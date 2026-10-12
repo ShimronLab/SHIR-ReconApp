@@ -13,8 +13,13 @@ Each value is recorded with its source (``AcqFacts``) so the UI and report can
 show where it came from.
 
 Pulseq headers carry interpreter placeholders (matrix, oversampling, even
-"3D"), so Pulseq and unreadable files are not assembled here:
-``acquire_cartesian`` returns None and callers keep their existing path.
+"3D"), so Pulseq geometry comes from the sequence itself instead: the played
+.seq (found by the signature in the header), else the trajectory JSON written
+with the scan. Each gives the k-space position of every readout, so lines are
+placed by their true phase-encode index in the same way. Without either (or
+for unreadable headers) ``acquire_cartesian`` returns None and callers keep
+their existing path, which infers the placement from the file name and line
+count.
 """
 
 from dataclasses import dataclass
@@ -32,6 +37,8 @@ class Src(str, Enum):
     HEADER = "protocol header"
     MDH = "per-line header"
     NOISE = "noise-adjust scan"
+    SEQ = "played .seq"
+    TRAJ_JSON = "trajectory JSON"
     DATA = "inferred from data"
     DERIVED = "derived"
     SETTING = "app setting"
@@ -187,17 +194,25 @@ def acquire_cartesian(
     *,
     slice_selector_cb: Optional[Callable[[int], int]] = None,
     slice_idx: Optional[int] = None,
+    json_path: Optional[str] = None,
     log: Optional[Callable[[str], None]] = None,
 ) -> Optional[Assembled]:
     """
-    Read a Siemens Cartesian 2-D file and assemble one slice on the full grid.
+    Read a Cartesian 2-D file and assemble one slice on the full grid.
 
-    Returns None for Pulseq files and files whose header cannot be read — the
-    caller then keeps its existing path. Raises UnsupportedAcquisition /
-    AcquisitionConflict when the file cannot be reconstructed correctly.
+    Siemens files from their header; Pulseq files from the played .seq or the
+    scan's trajectory JSON (``json_path``, else found next to the scan).
+    Returns None when neither applies (unreadable header, Pulseq without .seq
+    or JSON) — the caller then keeps its existing path. Raises
+    UnsupportedAcquisition / AcquisitionConflict when the file cannot be
+    reconstructed correctly.
     """
     from .utils import ensure_twix_importable, sequence_family
-    if sequence_family(dat_path) != "siemens":
+    family = sequence_family(dat_path)
+    if family == "pulseq":
+        return acquire_pulseq(dat_path, slice_selector_cb=slice_selector_cb,
+                              slice_idx=slice_idx, json_path=json_path, log=log)
+    if family != "siemens":
         return None
     if log:
         log(f"Reading TWIX data: {Path(dat_path).name}")
@@ -388,6 +403,323 @@ def assemble_siemens(
     for w in facts.warnings:
         emit(f"  [ACQ] WARNING: {w}")
     return asm
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Pulseq: line geometry from the played .seq or the scan's trajectory JSON
+# ─────────────────────────────────────────────────────────────────────────────
+
+# A JSON line order is replaced by the TSE echo-train plan only when the image
+# placed by the plan has this much lower entropy (nats) — a JSON may be shared
+# by an SE and a TSE scan and then carry the SE order. On the lab's scans the
+# wrong order costs 0.5–0.8 nats.
+_ORDER_DECISION_NATS = 0.1
+
+
+def acquire_pulseq(
+    dat_path: str,
+    *,
+    slice_selector_cb: Optional[Callable[[int], int]] = None,
+    slice_idx: Optional[int] = None,
+    json_path: Optional[str] = None,
+    log: Optional[Callable[[str], None]] = None,
+) -> Optional[Assembled]:
+    """
+    Assemble one slice of a Pulseq scan from the k-space position of each
+    readout, taken from (1) the played .seq — found by its signature, or
+    located by the user when a request handler is set — else (2) the
+    trajectory JSON written with the scan. None when neither is available or
+    neither matches the data; the caller then keeps its existing path.
+    """
+    from . import seq_geometry as sg
+    from .utils import ensure_twix_importable
+
+    def emit(msg: str) -> None:
+        if log:
+            log(msg)
+
+    info = sg.locate_played_seq(dat_path, log)
+    json_path = json_path or sg.find_line_json(dat_path)
+    if not info["path"]:
+        if info["signature"]:
+            emit(f"  [ACQ] {info['note']} ({info['name']}).")
+        if not json_path:
+            emit("  [ACQ] No .seq or trajectory JSON for this Pulseq scan — line placement "
+                 "is inferred from the file name and line count.")
+            return None
+
+    emit(f"Reading TWIX data: {Path(dat_path).name}")
+    ensure_twix_importable()
+    from read_siemens_scans.twix_reading import read_raw_twix_data
+    raw, _dims = read_raw_twix_data(str(dat_path), fix_oversampling=False)[:2]
+    n_slices = 1
+    if raw.ndim == 4:                                  # (slices, lines, coils, read)
+        n_slices = raw.shape[0]
+        if slice_idx is None:
+            slice_idx = int(slice_selector_cb(n_slices)) if slice_selector_cb else n_slices // 2
+        raw = raw[slice_idx]
+        emit(f"  Multi-slice scan ({n_slices} slices) — using slice {slice_idx}")
+    if raw.ndim != 3:
+        return None
+    n_lin, _n_coils, ncol = raw.shape
+
+    sources = []
+    if info["path"]:
+        sources.append(("seq", info["path"]))
+    if json_path:
+        sources.append(("json", json_path))
+    for kind, path in sources:
+        name = Path(path).name
+        try:
+            if kind == "seq":
+                geo = sg.seq_line_geometry(path)
+                src, detail = Src.SEQ, f"{name} (signature {info['signature']})"
+            else:
+                geo = sg.json_line_geometry(path, ncol)
+                src, detail = Src.TRAJ_JSON, name
+        except ImportError:
+            emit("  [ACQ] pypulseq is not installed — the played .seq cannot be read.")
+            continue
+        except (OSError, ValueError, KeyError) as exc:
+            emit(f"  [ACQ] {name}: {exc}")
+            continue
+        if geo["samples_per_adc"] != ncol:
+            emit(f"  [ACQ] {name}: {geo['samples_per_adc']} samples per line, the data has "
+                 f"{ncol} — not used.")
+            continue
+        pe = _per_slice_lines(geo["pe_index"], n_lin, n_slices)
+        if pe is None:
+            emit(f"  [ACQ] {name}: {geo['pe_index'].size} lines, the data has {n_lin} per "
+                 f"slice ({n_slices} slice(s)) — not used.")
+            continue
+        if src is Src.TRAJ_JSON:
+            pe, detail = _check_echo_order(dat_path, raw, pe, detail, emit)
+        asm = assemble_pulseq(raw, pe, geo, src=src, detail=detail, slice_idx=slice_idx,
+                              n_slices=n_slices, log=log)
+        if asm is not None:
+            return asm
+    emit("  [ACQ] Falling back to line placement inferred from the file name and line count.")
+    return None
+
+
+def assemble_pulseq(
+    raw: np.ndarray,
+    pe: np.ndarray,
+    geo: Dict[str, Any],
+    *,
+    src: Src,
+    detail: str,
+    slice_idx: Optional[int] = None,
+    n_slices: int = 1,
+    log: Optional[Callable[[str], None]] = None,
+) -> Optional[Assembled]:
+    """
+    Place Pulseq readouts (raw: lines × coils × samples, acquisition order) on
+    their phase-encode grid. ``pe`` is each readout's phase-encode index (k = 0
+    → 0); ``geo`` carries readout oversampling, direction and FOV. None when
+    every line is recorded more than once (averages or unlabelled slices).
+    """
+    from .utils import crop_readout_oversampling
+
+    def emit(msg: str) -> None:
+        if log:
+            log(msg)
+
+    facts = AcqFacts()
+    facts.set("family", "pulseq", Src.HEADER, "Config.SequenceFileName")
+    facts.set("geometry_source", src.value, src, detail)
+    n_lin, n_coils, ncol = raw.shape
+    if n_slices > 1:
+        facts.set("n_slices", n_slices, Src.MDH, f"slice {slice_idx} reconstructed")
+    facts.set("n_coils", n_coils, Src.MDH)
+    facts.set("n_adc_samples", ncol, Src.MDH)
+
+    # ── Repeated readouts of a line: keep the first (later ones are fillers) ──
+    pe = np.asarray(pe, dtype=int)
+    uniq, first, counts = np.unique(pe, return_index=True, return_counts=True)
+    if uniq.size < pe.size and counts.min() > 1:
+        emit(f"  [ACQ] Every line is recorded {counts.min()}+ times (averages or slices the "
+             f"file does not label) — not assembled from the {src.value}.")
+        return None
+    if uniq.size < pe.size:
+        facts.warnings.append(
+            f"{pe.size - uniq.size} repeated readout(s) of line(s) "
+            f"{uniq[counts > 1].tolist()[:5]} not used (the first acquisition is kept).")
+    keep = np.sort(first)
+    pe = pe[keep]
+
+    # ── Readout: k increasing along the array, then remove oversampling ──────
+    arr = np.transpose(raw[keep], (2, 0, 1)).astype(np.complex128)     # (read, line, coil)
+    reversed_read = bool(geo.get("read_reversed"))
+    if reversed_read:
+        arr = arr[::-1]
+    facts.set("read_reversed", reversed_read, src,
+              "samples run from +k to −k; reversed" if reversed_read else "")
+    ratio = float(geo.get("readout_os") or 1.0)
+    read_os = int(round(ratio))
+    if read_os not in (1, 2) or abs(ratio - read_os) > 0.1:
+        facts.warnings.append(f"Readout/phase k-step ratio {ratio:.2f} — oversampling not removed.")
+        read_os = 1
+    facts.set("read_os", read_os, src, f"Δk_phase / Δk_read = {ratio:.3f}")
+
+    # ── Phase-encode grid ─────────────────────────────────────────────────────
+    n_read_img = ncol // read_os
+    lo, hi = int(pe.min()), int(pe.max())
+    span = hi - lo + 1
+    steps = np.diff(uniq)
+    max_step = int(steps.max()) if steps.size else 1
+    one_sided = abs(-lo - (hi + 1)) > max_step + 1     # one half of k-space much shorter
+    if one_sided:
+        n_full = 2 * max(-lo, hi + 1)
+        how = "symmetric about k = 0 around the longer half (partial Fourier)"
+    elif span <= n_read_img and n_read_img - span <= max_step + 1:
+        n_full = n_read_img
+        how = "square pixels: phase-encode FOV / readout resolution"
+    else:
+        n_full = span + span % 2
+        how = "span of the acquired lines"
+    offset = n_full // 2
+    if lo + offset < 0:
+        offset = -lo
+    elif hi + offset >= n_full:
+        offset = n_full - 1 - hi
+    facts.set("n_pe_full", n_full, Src.DERIVED, how)
+    facts.set("pe_centre_line", offset, src, "row of k = 0")
+    if offset != n_full // 2:
+        facts.warnings.append(
+            f"k = 0 placed {offset - n_full // 2:+d} line(s) from the grid centre to fit the "
+            f"lines (a linear phase; magnitude unaffected).")
+    if geo.get("pe_half_line"):
+        facts.set("pe_half_line", True, src,
+                  "lines sampled half a line off k = 0 (a linear phase; magnitude unaffected)")
+    facts.set("swapped", bool(geo.get("swapped")), src, "phase encoding on the x gradient")
+
+    rows = pe + offset
+    kspace = np.zeros((ncol, n_full, n_coils), dtype=np.complex128)
+    kspace[:, rows, :] = arr
+    if read_os > 1:
+        kspace = crop_readout_oversampling(kspace, expected_nx=n_read_img,
+                                           readout_axis=0, os_factor=read_os)
+    facts.set("prewhitened", False, Src.SETTING, "Pulseq scans carry no noise-adjust data")
+
+    # ── Line categories, calibration block ────────────────────────────────────
+    cat = np.zeros(n_full, dtype=np.uint8)
+    cat[rows] |= np.uint8(LineCat.ACQ)
+    pi_lo, pi_hi = 0, n_full
+    pf = "off"
+    if one_sided:
+        if hi + 1 < -lo:
+            pi_hi = int(rows.max()) + 1
+        else:
+            pi_lo = int(rows.min())
+        cat[:pi_lo] |= np.uint8(LineCat.PF_MISSING)
+        cat[pi_hi:] |= np.uint8(LineCat.PF_MISSING)
+        frac = (pi_hi - pi_lo) / n_full
+        pf = f"{round(frac * 8)}/8" if abs(frac * 8 - round(frac * 8)) < 0.15 else f"{frac:.2f}"
+    facts.set("partial_fourier", pf, src, "acquired extent about k = 0")
+    gaps = (cat & np.uint8(LineCat.ACQ | LineCat.PF_MISSING)) == 0
+    cat[gaps] |= np.uint8(LineCat.SKIP_ACCEL)
+    inner_gaps = gaps[int(rows.min()):int(rows.max()) + 1].any()
+    if inner_gaps:
+        run = _longest_run(np.unique(rows), centre=offset)
+        cat[run] |= np.uint8(LineCat.CALIB)
+        calib_range = (int(run[0]), int(run[-1]) + 1)
+    else:
+        half = int(min(offset - rows.min(), rows.max() - offset))
+        calib_range = (offset - half, offset + half + 1)
+
+    energy = np.sum(np.abs(kspace) ** 2, axis=(0, 2))
+    dc_row = int(np.argmax(energy))
+    if abs(dc_row - offset) > 1:
+        facts.warnings.append(f"Strongest line {dc_row} is not the k-space centre {offset}.")
+
+    spacing = None
+    fov_pe, fov_read_os = geo.get("fov_phase_mm"), geo.get("fov_read_os_mm")
+    if fov_pe and fov_read_os:
+        spacing = (round(fov_read_os / ncol, 4), round(fov_pe / n_full, 4))
+        facts.set("pixel_spacing_mm", spacing, src, "FOV from the k-space step / matrix")
+    facts.set("n_read_image", kspace.shape[0], Src.DERIVED)
+
+    asm = Assembled(kspace=kspace, line_category=cat, calib_range=calib_range,
+                    pi_range=(pi_lo, pi_hi), n_pe_image=n_full, pixel_spacing_mm=spacing,
+                    facts=facts, slice_idx=slice_idx)
+    r_accel, r_pf, _ = asm.r_parts()
+    facts.set("n_pe_acquired", int(asm.pe_mask.sum()), src)
+    facts.set("accel_r", round(r_accel, 2), Src.DERIVED)
+    facts.set("r_partial_fourier", round(r_pf, 3), Src.DERIVED)
+    emit(f"  [ACQ] Line placement from the {src.value}: {detail}")
+    emit(f"  [ACQ] {facts.summary()}")
+    for w in facts.warnings:
+        emit(f"  [ACQ] WARNING: {w}")
+    return asm
+
+
+def _per_slice_lines(pe: np.ndarray, n_lin: int, n_slices: int) -> Optional[np.ndarray]:
+    """The phase-encode index of each of one slice's n_lin readouts, or None
+    when the geometry does not describe this data."""
+    pe = np.asarray(pe)
+    if pe.size == n_lin:
+        return pe
+    if n_slices > 1 and pe.size == n_lin * n_slices:
+        per_line = pe.reshape(n_lin, n_slices)         # slices interleaved within a line
+        if np.all(per_line == per_line[:, :1]):
+            return per_line[:, 0]
+        per_slice = pe.reshape(n_slices, n_lin)        # one slice after the other
+        if np.all(per_slice == per_slice[:1]):
+            return per_slice[0]
+    return None
+
+
+def _longest_run(rows: np.ndarray, centre: int) -> np.ndarray:
+    """Longest run of consecutive rows (ties: the one nearest the centre)."""
+    breaks = np.where(np.diff(rows) != 1)[0] + 1
+    runs = np.split(rows, breaks)
+    return max(runs, key=lambda r: (r.size, -abs((r[0] + r[-1]) / 2 - centre)))
+
+
+def image_entropy(lines: np.ndarray, pe: np.ndarray) -> float:
+    """
+    Entropy (nats) of the root-sum-of-squares image when the readouts
+    (lines × coils × samples) are placed at ``pe`` — the usual autofocus
+    measure: a wrong line order spreads signal into ghosts and raises it.
+    Only comparable between placements of the same lines.
+    """
+    from .imaging import ifft2c
+    uniq, first = np.unique(np.asarray(pe, dtype=int), return_index=True)
+    n = 2 * max(-int(uniq.min()), int(uniq.max()) + 1)
+    k = np.zeros((lines.shape[2], n, lines.shape[1]), dtype=np.complex128)
+    k[:, uniq + n // 2, :] = np.transpose(lines[first], (2, 0, 1))
+    img = np.sqrt(np.sum(np.abs(ifft2c(k)) ** 2, axis=2)).ravel()
+    p = img[img > 0] / img.sum()
+    return float(-np.sum(p * np.log(p)))
+
+
+def _check_echo_order(dat_path, raw, pe, detail, emit):
+    """
+    A trajectory JSON can be shared by an SE and a TSE scan of the same
+    pattern and then carry the SE order. For a TSE scan, compare it with the
+    echo-train plan on the same lines and keep the JSON unless the plan gives
+    a clearly sharper image (lower entropy).
+    """
+    from .tse_reorder import detect_tse_params, tse_acq_to_line
+    tse = detect_tse_params(dat_path)
+    if tse is None:
+        return pe, detail
+    n = 2 * max(-int(pe.min()), int(pe.max()) + 1)
+    if n % tse["necho"]:
+        return pe, detail
+    mask = np.zeros(n, dtype=bool)
+    mask[pe + n // 2] = True
+    plan = tse_acq_to_line(n, tse["necho"], tse["TE1"], tse["TEeff"], pe_mask=mask) - n // 2
+    if plan.size != pe.size or np.array_equal(plan, pe) \
+            or not np.array_equal(np.sort(plan), np.sort(pe)):
+        return pe, detail
+    h_json, h_plan = image_entropy(raw, pe), image_entropy(raw, plan)
+    if h_json - h_plan > _ORDER_DECISION_NATS:
+        emit(f"  [ACQ] The JSON line order is not this TSE scan's echo order (image entropy "
+             f"{h_json:.2f} vs {h_plan:.2f} with the echo-train plan) — using the plan.")
+        return plan, f"{detail} (lines), TSE echo-train plan (order)"
+    return pe, detail
 
 
 def finalize_image(img: np.ndarray, asm: Optional[Assembled], axis: int = 1) -> np.ndarray:

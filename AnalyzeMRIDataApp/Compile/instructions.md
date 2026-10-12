@@ -46,10 +46,21 @@ SE_1mm/                                  ← a "scan folder" (any name)
 │   └── PoissonDisc.dat
 ├── Bands.json                           ← band trajectories (keys "0"–"15")
 ├── PoissonDisc.json                     ← Poisson-disc trajectory
-└── Undersampled4equispaced.json         ← equispaced PE mask (the "4" = R factor)
+├── Undersampled4equispaced.json         ← equispaced PE mask (the "4" = R factor)
+└── seq_files/                           ← the Pulseq .seq files that were played
 ```
 You can open either the scan folder (`SE_1mm/`) or the `dat_files/` folder
 directly.
+
+> **Keep the `.seq` of every Pulseq scan.** The scan's header records which
+> `.seq` was played and its signature. When that exact file is found (next to
+> the scan, in `seq_files/` or a `*_seq/` folder, or in the **.seq library**
+> folder from the parameter panel), the app places every k-space line exactly
+> where the sequence put it — echo order and direction included. If it is not
+> found, the app asks you to locate it (once per sequence); without it, the
+> trajectory JSON is used, and as a last resort the file name and line count —
+> which mirrors the image for some older sequences and cannot handle every TSE
+> echo order. The log states which source was used.
 
 ### Filename → type rules (case-insensitive substring of the filename)
 
@@ -70,8 +81,9 @@ JSON manually. Tip: keep the standard JSON files in the **scan-folder root** (th
 parent of `dat_files/`), not inside `dat_files/`.
 
 > **TSE scans:** files named `band_tse_N` are handled as Band data. For the
-> Cartesian recons the app auto-detects TSE from the filename and un-scrambles
-> the echo order; you can override this in the **TSE echo order** panel.
+> Cartesian recons the echo order comes from the played `.seq` (or the
+> trajectory JSON); only without either does the app guess it from the filename,
+> which you can override in the **TSE echo order** panel.
 
 ### Siemens scanner scans (native product sequences)
 
@@ -320,7 +332,7 @@ either engine and always work. The log prints which engine ran for each job.
 | ESPIRiT | ESPIRiT threshold | all ESPIRiT methods | *Engine default* (BART 0.001, sigpy 0.02) or one value for both engines |
 | Siemens scans | Partial-Fourier lines | Siemens product scans | Zero-fill (default) / Homodyne / POCS for lines a partial-Fourier protocol never acquired |
 | Siemens scans | Noise prewhitening | Siemens product scans | decorrelate coils with the file's noise scan (default on) |
-| Pulseq scans | .seq library | Pulseq scans | folder with the lab's `.seq` files, used to cross-check line placement (log only) |
+| Pulseq scans | .seq library | Pulseq scans | folder with the lab's `.seq` files, searched for the sequence each scan played |
 | Fully Sampled | Combination mode | Fully-Sampled | RSS or ESPIRiT + SENSE |
 | Equispaced | Method | Equispaced | GRAPPA … ESPIRiT ±L1/L2/TV |
 | Equispaced | Mask method | Equispaced | analytical or from-data pattern |

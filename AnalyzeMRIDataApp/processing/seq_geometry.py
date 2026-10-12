@@ -1,5 +1,5 @@
 """
-Pulseq geometry from the .seq file that was actually played.
+Pulseq line geometry: where every recorded readout sits in k-space.
 
 A Pulseq TWIX header carries interpreter placeholders for matrix, FOV and
 oversampling, but it reliably names the played file (``Meas.tFree``) and its
@@ -10,30 +10,49 @@ every line (TSE echo order included), the readout oversampling and the FOV.
 
 Search order for the .seq (each must match the signature):
   the scan folder, its parent, ``seq_files/`` and ``*_seq/`` next to them or
-  one level up, then the user's .seq library folder (set_library_dir).
-A same-name file with a different signature is NOT used for geometry: it was
-regenerated after the scan and may differ.
+  one level up, the user's .seq library folder (set_library_dir), and folders
+  the user pointed to this session (locate_played_seq asks, when a handler is
+  set). A same-name file with a different signature is NOT used: it was
+  regenerated after the scan and may differ.
 
-pypulseq is imported lazily; without it (or without the file) this module
-reports that the geometry is unavailable and callers keep their own path.
+Without the .seq, the trajectory JSON written with the scan (find_line_json)
+carries the same per-line k positions (json_line_geometry).
+
+pypulseq is imported lazily; without it (or without either file) callers fall
+back to their own path.
 """
 
 import functools
+import json
 import os
 import re
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import numpy as np
 
 _HASH_RE = re.compile(rb"^Hash\s+([0-9a-fA-F]{32})\s*$", re.MULTILINE)
 _LIBRARY_DIR: Optional[str] = None
+_EXTRA_DIRS: List[str] = []                    # folders the user pointed to this session
+_REQUEST_HANDLER: Optional[Callable[[Dict[str, Any]], Optional[str]]] = None
+_ASKED: Dict[str, Optional[str]] = {}          # signature → chosen path (None = skipped)
 
 
 def set_library_dir(path: Optional[str]) -> None:
     """Folder (searched recursively) holding the lab's .seq files."""
     global _LIBRARY_DIR
     _LIBRARY_DIR = path or None
+
+
+def set_seq_request_handler(handler: Optional[Callable[[Dict[str, Any]], Optional[str]]]) -> None:
+    """
+    ``handler(info) -> path or None`` is called when a Pulseq scan's played
+    .seq cannot be found (info as returned by played_seq). The GUI shows a
+    file dialog; None means "continue without it". Each signature is asked
+    about once per session.
+    """
+    global _REQUEST_HANDLER
+    _REQUEST_HANDLER = handler
 
 
 def seq_signature(seq_path: str) -> Optional[str]:
@@ -71,6 +90,7 @@ def _search_dirs(dat_path: str) -> List[Tuple[Path, bool]]:
                  if d.is_dir()]
     if _LIBRARY_DIR and Path(_LIBRARY_DIR).is_dir():
         dirs.append((Path(_LIBRARY_DIR), True))
+    dirs += [(Path(d), False) for d in _EXTRA_DIRS if Path(d).is_dir()]
     return dirs
 
 
@@ -105,13 +125,41 @@ def played_seq(dat_path: str) -> Dict[str, Any]:
     return out
 
 
+def locate_played_seq(dat_path: str, log: Optional[Callable[[str], None]] = None) -> Dict[str, Any]:
+    """
+    played_seq, and when the exact file is not found, ask the user once per
+    signature (if a request handler is set). A chosen file is used only if its
+    signature matches; its folder is then searched for the rest of the session.
+    """
+    info = played_seq(dat_path)
+    sig = info["signature"]
+    if info["path"] or not sig or _REQUEST_HANDLER is None:
+        return info
+    if sig not in _ASKED:
+        chosen = _REQUEST_HANDLER(dict(info))
+        if chosen and seq_signature(chosen) == sig:
+            _ASKED[sig] = chosen
+            folder = str(Path(chosen).parent)
+            if folder not in _EXTRA_DIRS:
+                _EXTRA_DIRS.append(folder)
+        else:
+            if chosen and log:
+                log(f"  [SEQ] {Path(chosen).name} is a different version of the sequence "
+                    f"(signature {seq_signature(chosen) or 'none'}, scan played {sig}) — not used.")
+            _ASKED[sig] = None
+    if _ASKED[sig]:
+        info = dict(info, path=_ASKED[sig], note="")
+    return info
+
+
 @functools.lru_cache(maxsize=16)
 def seq_line_geometry(seq_path: str) -> Dict[str, Any]:
     """
     Line geometry from a .seq: for every ADC in acquisition order its
     phase-encode index (k-space centre = 0), plus samples per ADC, readout
-    oversampling (Δk_pe / Δk_read), the PE grid size and the FOVs in mm.
-    Raises ImportError without pypulseq, ValueError for non-Cartesian data.
+    oversampling (Δk_pe / Δk_read), readout direction, the PE grid size and
+    the FOVs in mm. Raises ImportError without pypulseq, ValueError for
+    non-Cartesian data.
     """
     import pypulseq as pp
     seq = pp.Sequence()
@@ -122,15 +170,52 @@ def seq_line_geometry(seq_path: str) -> Dict[str, Any]:
     if not samples or len(set(samples)) != 1:
         raise ValueError("ADC sample counts vary — not a Cartesian line acquisition.")
     n_adc, n_samp = len(samples), samples[0]
-    kx = k_adc[0].reshape(n_adc, n_samp)
-    ky = k_adc[1].reshape(n_adc, n_samp)
-    scale = max(np.abs(k_adc[:2]).max(), 1e-12)
+    geo = _lines_from_k(k_adc[0].reshape(n_adc, n_samp), k_adc[1].reshape(n_adc, n_samp))
+    geo["signature"] = seq_signature(seq_path)
+    return geo
+
+
+def json_line_geometry(json_path: str, n_read: int) -> Dict[str, Any]:
+    """
+    The same line geometry from a trajectory JSON written with the scan
+    ({"0": [[kx…], [ky…]]}, samples in acquisition order, n_read per line).
+    Raises ValueError when the JSON does not describe n_read-sample lines.
+    """
+    st = os.stat(json_path)
+    return dict(_json_line_geometry(str(json_path), int(n_read), st.st_mtime_ns, st.st_size))
+
+
+@functools.lru_cache(maxsize=8)
+def _json_line_geometry(json_path: str, n_read: int, _mtime: int, _size: int) -> Dict[str, Any]:
+    with open(json_path, "r") as fh:
+        data = json.load(fh)
+    traj = np.asarray(data["0"] if isinstance(data, dict) else data, dtype=float)
+    if traj.ndim != 2 or traj.shape[0] < 2:
+        raise ValueError("not a [[kx…], [ky…]] trajectory")
+    kx, ky = traj[0], traj[1]
+    if kx.size % n_read:
+        raise ValueError(f"{kx.size} samples are not whole {n_read}-sample lines")
+    n_lines = kx.size // n_read
+    geo = _lines_from_k(kx.reshape(n_lines, n_read), ky.reshape(n_lines, n_read))
+    fov = geo["fov_phase_mm"]
+    if not 20.0 <= fov <= 1000.0:                      # JSON in other units: no FOV
+        geo["fov_phase_mm"] = geo["fov_read_os_mm"] = None
+    return geo
+
+
+def _lines_from_k(kx: np.ndarray, ky: np.ndarray) -> Dict[str, Any]:
+    """Per-line geometry from k positions shaped (n_lines, n_samples)."""
+    n_adc, n_samp = kx.shape
+    scale = max(np.abs(kx).max(), np.abs(ky).max(), 1e-12)
     if np.allclose(ky.std(axis=1), 0, atol=1e-6 * scale):
         read_k, pe_k, swapped = kx, ky[:, 0], False
     elif np.allclose(kx.std(axis=1), 0, atol=1e-6 * scale):
         read_k, pe_k, swapped = ky, kx[:, 0], True
     else:
-        raise ValueError("Neither k axis is constant within an ADC — not Cartesian.")
+        raise ValueError("Neither k axis is constant within a line — not Cartesian.")
+    direction = np.sign(read_k[:, -1] - read_k[:, 0])
+    if np.unique(direction).size != 1 or direction[0] == 0:
+        raise ValueError("Readout direction alternates between lines (EPI-like) — not supported.")
     pe_values = np.unique(np.round(pe_k, 6))
     steps = np.diff(pe_values)
     d_pe = float(steps.min()) if steps.size else 1.0
@@ -153,8 +238,42 @@ def seq_line_geometry(seq_path: str) -> Dict[str, Any]:
         "fov_phase_mm": 1000.0 / d_pe,
         "fov_read_os_mm": 1000.0 / d_read if d_read else None,
         "swapped": swapped,
-        "signature": seq_signature(seq_path),
+        "read_reversed": bool(direction[0] < 0),       # samples run from +k to −k
     }
+
+
+def find_line_json(dat_path: str) -> Optional[str]:
+    """
+    The trajectory JSON written with a Cartesian scan, in the scan folder (the
+    parent of dat_files/) or next to the .dat:
+      * ``Undersampled<R>equispace(d|s)[_swapPE].json`` for an ``_R<n>`` scan;
+      * ``FullySampled[_<tokens>].json`` whose tokens all appear in the .dat
+        name (e.g. FullySampled_tse_t2.json ↔ …fully_sampled_tse_t2.dat).
+    """
+    dat = Path(dat_path)
+    stem = dat.stem.lower()
+    folders = [dat.parent.parent, dat.parent]
+    swap = "swappe" in stem
+    m = re.search(r"_r(\d+)", stem)
+    if m:
+        r = m.group(1)
+        names = [f"{p}ndersampled{r}equispace{e}.json" for p in ("U", "u") for e in ("d", "s")]
+        if swap:
+            names = [n.replace(".json", "_swapPE.json") for n in names] + names
+        for folder in folders:
+            for name in names:
+                if (folder / name).is_file():
+                    return str(folder / name)
+        return None
+    if "fully" not in stem:
+        return None
+    flat = stem.replace("_", "")
+    for folder in folders:
+        for cand in sorted(folder.glob("[Ff]ully[Ss]ampled*.json")):
+            tokens = [t for t in cand.stem.lower().split("_")[1:] if t]
+            if ("swappe" in tokens) == swap and all(t in flat for t in tokens):
+                return str(cand)
+    return None
 
 
 def shadow_check(dat_path: str, legacy_rows, n_phase: int, log=None) -> None:

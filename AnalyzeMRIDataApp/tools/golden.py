@@ -17,9 +17,11 @@ Run under WSL in the mri_toolkit env, for example:
   python tools/golden.py compare --app-root <repo root> \
       --baseline <golden dir>/fdad7a9 --fast
 
-Cases from Pulseq scans must match the baseline (exactly, or within --rtol).
-Cases from Siemens product scans are reported but not failed: their geometry is
-expected to change once it is read from the header.
+Cases from Pulseq scans placed by the legacy path must match the baseline
+(exactly, or within --rtol). Pulseq cases now placed by their played .seq or
+trajectory JSON are reported as MIRRORED (the baseline mirrored along phase
+encode — the legacy placement had the direction reversed) or CHANGED, and
+Siemens product cases as CHANGED; neither fails the run.
 """
 
 import os
@@ -399,6 +401,38 @@ def compare_case(entry: dict, base_dir: Path, result, error, rtol: float):
     return "PASS", f"added {added}" if added else ""
 
 
+def mirror_check(entry: dict, base_dir: Path, result, rtol: float):
+    """
+    For a Pulseq case now placed by its .seq / JSON: is every stored array the
+    baseline mirrored along phase encode (k-space lines reversed, possibly
+    shifted by a line or two)? Compares magnitudes. Returns (status, details).
+    """
+    arrays, _meta = summarise(result)
+    stored = np.load(base_dir / entry["file"])
+    worst, bad, mirrored = 0.0, [], 0
+    tol = max(rtol, 1e-6)
+    for key in entry["arrays"]:
+        if key not in arrays or arrays[key].shape != stored[key].shape:
+            bad.append(f"{key} missing/reshaped")
+            continue
+        cur = np.abs(np.asarray(arrays[key], dtype=np.complex128))
+        base = np.abs(np.asarray(stored[key], dtype=np.complex128))
+        axis = 1 if base.ndim >= 2 else 0
+        flipped = np.flip(base, axis=axis)
+        err_mirror = min(_rel_err(cur, np.roll(flipped, s, axis=axis)) for s in range(-2, 3))
+        err_same = _rel_err(cur, base)
+        err = min(err_mirror, err_same)
+        mirrored += err_mirror < err_same
+        worst = max(worst, err)
+        if err > tol:
+            bad.append(f"{key} {err:.2e}")
+    if bad:
+        return "CHANGED", "; ".join(bad[:6])
+    if not mirrored:
+        return "PASS~", f"max rel.err {worst:.2e} (now placed by the .seq/JSON)"
+    return "MIRRORED", f"max rel.err {worst:.2e} after mirroring the baseline"
+
+
 def _norm_scalar(v):
     """Compare nested scalars/dicts ignoring dict ordering."""
     return json.dumps(v, sort_keys=True, default=str)
@@ -425,6 +459,11 @@ def cmd_compare(args) -> int:
         status, details = compare_case(entry, base_dir, result, error, args.rtol)
         if status == "FAIL" and entry["family"] != "pulseq":
             status = "CHANGED"                    # product geometry is expected to change
+        elif status == "FAIL" and result is not None and result.get("acq_facts"):
+            # Pulseq placed by its .seq / JSON: expected to differ from the
+            # legacy placement — report whether it is just the mirror image.
+            status, how = mirror_check(entry, base_dir, result, args.rtol)
+            details = f"{how} [was: {details[:120]}]"
         failed += status == "FAIL"
         seen = set(entry["logs"])
         new_logs = [m for m in logs if m not in seen]
@@ -433,7 +472,7 @@ def cmd_compare(args) -> int:
         print(f"[{i + 1}/{len(entries)}] {status:10s} {entry['id']}  {details}", flush=True)
 
     counts = {s: sum(r["status"] == s for r in report) for s in
-              ("PASS", "PASS~", "SAME-ERROR", "CHANGED", "FAIL")}
+              ("PASS", "PASS~", "SAME-ERROR", "MIRRORED", "CHANGED", "FAIL")}
     print("summary:", ", ".join(f"{k}={v}" for k, v in counts.items()), flush=True)
     if args.report:
         Path(args.report).write_text(json.dumps({"baseline": index["git_rev"],

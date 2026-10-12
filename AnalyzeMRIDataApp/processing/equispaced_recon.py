@@ -492,10 +492,11 @@ def _legacy_geometry(
 
 def _siemens_geometry(asm, r_factor, log):
     """
-    Geometry read from the file itself (processing.acquisition): lines already
-    sit on the full grid by their MDH counters, integrated reference lines are
+    Geometry from the acquisition layer (processing.acquisition): lines already
+    sit on the full grid — by their MDH counters (Siemens) or by the played
+    .seq / trajectory JSON (Pulseq) — and integrated reference lines are
     merged, so the mask, calibration block and acceleration are measured, not
-    guessed. No JSON, filename R or reference probing is needed.
+    guessed. No filename R or reference probing is needed.
     """
     from .acquisition import LineCat, UnsupportedAcquisition
     full_kspace = asm.kspace
@@ -509,10 +510,11 @@ def _siemens_geometry(asm, r_factor, log):
     acs_start, acs_end = asm.calib_range
     calib = full_kspace[:, acs_start:acs_end, :]
     pe_mask = asm.pe_mask
-    log(f"  Mask from line counters: {int(pe_mask.sum())} / {n_phase} lines "
+    source = asm.facts.get("geometry_source") or "line counters (MDH)"
+    log(f"  Mask from the {source}: {int(pe_mask.sum())} / {n_phase} lines "
         f"(R = {actual_r:.2f}×), calibration lines [{acs_start}, {acs_end})")
     return (full_kspace, calib, pe_mask, acs_start, acs_end, actual_r, n_phase,
-            asm.slice_idx, None, "line counters (MDH)", r_factor, None)
+            asm.slice_idx, None, source, r_factor, None)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -611,7 +613,8 @@ def reconstruct_equispaced(
     from .utils import crop_readout_oversampling
 
     # ── 1-3. Geometry: k-space on its phase-encode grid, mask, calibration ───
-    asm = acquire_cartesian(dat_path, slice_selector_cb=slice_selector_cb, log=log)
+    asm = acquire_cartesian(dat_path, slice_selector_cb=slice_selector_cb,
+                            json_path=json_path, log=log)
     if asm is not None and asm.facts.get("ref_mode") == "separate":
         log("  Separate reference scan: not supported by the header path yet — "
             "using the legacy geometry.")
