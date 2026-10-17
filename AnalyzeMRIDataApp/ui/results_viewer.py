@@ -7,6 +7,7 @@ from typing import Any, Dict
 
 import matplotlib
 matplotlib.use("Qt5Agg")
+import matplotlib.collections
 import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
@@ -150,6 +151,16 @@ def _norm(img: np.ndarray) -> np.ndarray:
     return (arr - mn) / (mx - mn + 1e-12)
 
 
+def _square_kspace_box(ax, xy: np.ndarray) -> None:
+    """Trajectory axes as a square ±kmax box on both axes (the scaled
+    trajectory spans ±0.5), like the k-space panel beside it, so a band has the
+    same shape and angle in both."""
+    lim = max(0.5, float(np.max(np.abs(xy)))) if np.size(xy) else 0.5
+    ax.set_xlim(-lim, lim)
+    ax.set_ylim(-lim, lim)
+    ax.set_aspect("equal", adjustable="box")
+
+
 def _build_anatomy_mask(image: np.ndarray,
                         threshold: float = MASK_THRESHOLD_DEFAULT,
                         dilation_iterations: int = MASK_DILATION_DEFAULT) -> np.ndarray:
@@ -255,9 +266,13 @@ class ReconTab(QWidget):
         super().__init__(parent)
         self._result = result
         self._title  = title
-        self._fig    = Figure(figsize=(14, 9), tight_layout=True)
+        # Layout is placed by _arrange_grid (equal square cells, centred), not
+        # tight_layout: panels keep their physical proportions, so tight_layout
+        # would leave them scattered across stretched slots.
+        self._fig    = Figure(figsize=(14, 9))
         self._canvas = FigureCanvas(self._fig)
         self._canvas.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self._canvas.mpl_connect("resize_event", self._on_canvas_resize)
 
         # Navigation toolbar (zoom, pan, save)
         self._nav = NavToolbar(self._canvas, self)
@@ -395,7 +410,12 @@ class ReconTab(QWidget):
         self._lbl_thr = QLabel("Thr:")
         self._lbl_dil = QLabel("Dil:")
 
-        # Toolbar row
+        # Sliders may shrink so the tab (and the main window) fits narrower screens.
+        for s in (self._slider_min, self._slider_max, self._slider_brightness):
+            s.setMinimumWidth(60)
+            s.setMaximumWidth(120)
+
+        # Toolbar row: navigation + view controls (every tab)
         ctrl_row = QHBoxLayout()
         ctrl_row.addWidget(self._nav)
         ctrl_row.addStretch()
@@ -408,21 +428,27 @@ class ReconTab(QWidget):
         ctrl_row.addWidget(self._slider_brightness)
         ctrl_row.addWidget(self._brightness_label)
         ctrl_row.addSpacing(12)
-        ctrl_row.addWidget(self._btn_center)
-        ctrl_row.addWidget(self._btn_crop)
-        ctrl_row.addSpacing(12)
-        ctrl_row.addWidget(self._btn_masked)
-        ctrl_row.addWidget(self._lbl_thr)
-        ctrl_row.addWidget(self._spin_thr)
-        ctrl_row.addWidget(self._lbl_dil)
-        ctrl_row.addWidget(self._spin_dil)
-        ctrl_row.addSpacing(12)
-        ctrl_row.addWidget(self._lbl_ref_orient)
-        ctrl_row.addWidget(self._combo_ref_orient)
-        ctrl_row.addWidget(self._btn_score_anyway)
-        ctrl_row.addSpacing(12)
         ctrl_row.addWidget(btn_rotate)
         ctrl_row.addWidget(btn_export)
+
+        # Second row: reference-comparison controls (only tabs with a reference
+        # show any of them; the row hides when none is visible)
+        self._analysis_bar = QWidget()
+        analysis_row = QHBoxLayout(self._analysis_bar)
+        analysis_row.setContentsMargins(0, 0, 0, 0)
+        analysis_row.addWidget(self._btn_center)
+        analysis_row.addWidget(self._btn_crop)
+        analysis_row.addSpacing(12)
+        analysis_row.addWidget(self._btn_masked)
+        analysis_row.addWidget(self._lbl_thr)
+        analysis_row.addWidget(self._spin_thr)
+        analysis_row.addWidget(self._lbl_dil)
+        analysis_row.addWidget(self._spin_dil)
+        analysis_row.addSpacing(12)
+        analysis_row.addWidget(self._lbl_ref_orient)
+        analysis_row.addWidget(self._combo_ref_orient)
+        analysis_row.addWidget(self._btn_score_anyway)
+        analysis_row.addStretch()
 
         # ── Acquisition facts row (Siemens results read from the file) ───────
         self._show_filled = False
@@ -450,12 +476,14 @@ class ReconTab(QWidget):
 
         layout = QVBoxLayout(self)
         layout.addLayout(ctrl_row)
+        layout.addWidget(self._analysis_bar)
         layout.addLayout(facts_row)
         layout.addWidget(self._canvas)
 
         # Draw initial figure
         self._axes_images = []  # (ax, raw_data) pairs for W/L update
-        self._kspace_axes = []        # k-space panels: keep their own aspect
+        self._kspace_axes = []        # k-space panels: aspect from the k-space step
+        self._schematic_axes = []     # diagrams (e.g. the 2-D PE mask): stretch to fit
         self._strip_requests = []     # (k-space axes, line categories) to annotate
         self._layout_base_rot = None  # 1 when images are drawn as rot90(read × phase)
         self._draw()
@@ -480,6 +508,7 @@ class ReconTab(QWidget):
             self._sync_ref_orient_combo()
         self._btn_score_anyway.setVisible(_orient_ok and bool(
             self._result.get("reference_blocked_reason") or self._result.get("_score_anyway")))
+        self._analysis_bar.setVisible(_masked_ok)
 
     # ─── Drawing ─────────────────────────────────────────────────────────────
 
@@ -487,6 +516,7 @@ class ReconTab(QWidget):
         self._fig.clear()
         self._axes_images.clear()
         self._kspace_axes.clear()
+        self._schematic_axes.clear()
         self._strip_requests.clear()
         self._layout_base_rot = None
         stype = self._result.get("scan_type", "")
@@ -512,6 +542,7 @@ class ReconTab(QWidget):
         self._apply_rotation()
         self._apply_physical_aspect()
         self._draw_sampling_strips()
+        self._arrange_grid()
         self._fig.suptitle(self._title, fontsize=11, fontweight="bold", y=0.99)
         self._canvas.draw()
 
@@ -564,19 +595,25 @@ class ReconTab(QWidget):
         dlg.exec_()
 
     def _apply_physical_aspect(self) -> None:
-        """Draw image panels with the real pixel shape (e.g. 0.42 × 0.59 mm)
-        instead of stretching them to the panel. Only for layouts that draw
-        rot90(read × phase) and results that know their pixel size."""
-        spacing = self._result.get("pixel_spacing_mm")
-        if not spacing or self._layout_base_rot is None:
+        """Draw every panel in its physical proportions instead of stretching
+        it to the panel: image panels with the real pixel shape (square pixels
+        when the size is unknown), k-space panels with the matching k-space
+        step, so a square acquisition is square everywhere and a band keeps its
+        angle. Runs after _apply_rotation, on the arrays as drawn."""
+        from processing.imaging import display_aspect
+        if self._layout_base_rot is None:
             return
-        d_read, d_phase = spacing
-        odd = (self._layout_base_rot + self._rotation) % 2 == 1
-        ratio = d_phase / d_read if odd else d_read / d_phase
+        spacing = self._result.get("pixel_spacing_mm")
+        turns = self._layout_base_rot + self._rotation
         kspace = {id(ax) for ax in self._kspace_axes}
-        for ax, _im, _data, _is_main in self._axes_images:
-            if id(ax) not in kspace:
-                ax.set_aspect(ratio)
+        skip = {id(ax) for ax in self._schematic_axes}
+        for ax in self._fig.axes:
+            if id(ax) in skip or not ax.images:
+                continue
+            shape = np.shape(ax.images[0].get_array())
+            if len(shape) < 2 or min(shape[:2]) < 8:
+                continue                                  # colorbars / thin strips
+            ax.set_aspect(display_aspect(shape, spacing, turns, kspace=id(ax) in kspace))
 
     def _draw_sampling_strips(self) -> None:
         """A thin colour strip BESIDE each measured k-space panel (never on top
@@ -627,9 +664,9 @@ class ReconTab(QWidget):
 
     def _display_k(self) -> int:
         """Total 90° CCW turns between a result array and what is on screen:
-        the layout's base rot90 (equispaced draws np.rot90) + the Rotate button."""
-        base = 1 if self._result.get("scan_type") == SCAN_EQUISPACED else 0
-        return (base + self._rotation) % 4
+        the layout's base rot90 (every layout draws np.rot90 of the
+        (read, phase) array) + the Rotate button."""
+        return (1 + self._rotation) % 4
 
     def _sync_ref_orient_combo(self) -> None:
         """Relabel the combo for the current screen rotation: the Auto entry
@@ -719,6 +756,18 @@ class ReconTab(QWidget):
             return
         k = self._rotation
         for ax in self._fig.axes:
+            # Trajectory scatter: turn the points with the images so the band
+            # stays at the same angle as in the k-space panel.
+            for coll in ax.collections:
+                if isinstance(coll, matplotlib.collections.PathCollection):
+                    xy = np.asarray(coll.get_offsets(), float)
+                    for _ in range(k):
+                        xy = np.column_stack([-xy[:, 1], xy[:, 0]])     # 90° CCW
+                    coll.set_offsets(xy)
+                    _square_kspace_box(ax, xy)
+                    names = {1: ("−ky", "kx"), 2: ("−kx", "−ky"), 3: ("ky", "−kx")}
+                    ax.set_xlabel(names[k][0])
+                    ax.set_ylabel(names[k][1])
             for im in list(ax.images):
                 arr = im.get_array()
                 if arr is None:
@@ -739,9 +788,43 @@ class ReconTab(QWidget):
         The bar is linked to the image's norm, so it follows any later
         ``set_clim`` from the W/L and brightness sliders automatically.
         """
-        cbar = self._fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+        # An inset of the panel itself (not space taken from the grid), so the
+        # bar stays right beside the image whatever its proportions.
+        cax = ax.inset_axes([1.04, 0.0, 0.05, 1.0])
+        cbar = self._fig.colorbar(im, cax=cax)
         cbar.ax.tick_params(labelsize=7)
         return cbar
+
+    # Room around each square panel, in inches: tick labels (left/bottom),
+    # colorbar + its labels (right), title (top).
+    _CELL_PAD = {"left": 0.5, "right": 0.75, "top": 0.5, "bottom": 0.35}
+    _HEADER_IN = 0.45                     # figure title
+
+    def _arrange_grid(self) -> None:
+        """Lay the subplot grid out as equal square cells, as large as the
+        canvas allows, centred: rows and columns line up and the panels keep
+        their proportions (set by _apply_physical_aspect) without gaps opening
+        between stretched slots. Re-run on every canvas resize."""
+        grid = [ax for ax in self._fig.axes if ax.get_subplotspec() is not None]
+        if not grid:
+            return
+        nrows, ncols = grid[0].get_subplotspec().get_gridspec().get_geometry()
+        w, h = self._fig.get_size_inches()
+        p = self._CELL_PAD
+        cell_w, cell_h = p["left"] + p["right"], p["top"] + p["bottom"]
+        side = min((w - 0.2) / ncols - cell_w, (h - self._HEADER_IN - 0.1) / nrows - cell_h)
+        side = max(side, 0.6)
+        grid_w, grid_h = ncols * (side + cell_w), nrows * (side + cell_h)
+        x0 = max((w - grid_w) / 2, 0.0)
+        y0 = max((h - self._HEADER_IN - grid_h) / 2, 0.0)
+        self._fig.subplots_adjust(
+            left=(x0 + p["left"]) / w, right=min((x0 + grid_w - p["right"]) / w, 0.999),
+            bottom=(y0 + p["bottom"]) / h, top=min((y0 + grid_h - p["top"]) / h, 0.999),
+            wspace=cell_w / side, hspace=cell_h / side)
+
+    def _on_canvas_resize(self, _event=None) -> None:
+        self._arrange_grid()
+        self._canvas.draw_idle()
 
     def _draw_nufft(self) -> None:
         r = self._result
@@ -755,45 +838,46 @@ class ReconTab(QWidget):
 
         combined_title = "Combined Image (Zero-Fill RSS)" if recon_mode == "zerofill" else "Combined Image (PICS)"
 
-        # Layout: 3 columns, 2 rows
+        # Layout: 3 columns, 2 rows. Arrays are (read/kx, phase/ky) like the
+        # Cartesian tabs and are drawn the same way, np.rot90: readout (kx)
+        # left→right, phase encode (ky) bottom→top — the trajectory plot below
+        # uses the same axes, so a band lies at the same angle in both panels.
         axes = self._fig.subplots(2, 3)
+        self._layout_base_rot = 1
 
         # Row 0
         if combined is not None:
-            img_data = _norm(combined)
+            img_data = np.rot90(_norm(combined))
             im = axes[0, 0].imshow(img_data, cmap="gray", aspect="auto")
             axes[0, 0].set_title(combined_title)
             self._add_cbar(axes[0, 0], im)
             self._axes_images.append((axes[0, 0], im, img_data, True))
 
-            # ROI anatomy-mask outline (masked-metrics). Drawn pre-rotated by the
-            # tab's Rotate button so it stays aligned with the image (the combined
-            # image has no base rotation here, so total k = self._rotation).
+            # ROI anatomy-mask outline (masked-metrics), drawn with the image's
+            # base rot90 and pre-rotated by the tab's Rotate button so it stays
+            # aligned (_apply_rotation only turns images, not contours).
             mask = r.get("_mask")
-            if mask is not None and np.shape(mask) == np.shape(img_data):
+            if mask is not None and np.shape(mask) == np.shape(combined):
                 axes[0, 0].contour(
-                    np.rot90(np.asarray(mask).astype(float), self._rotation),
+                    np.rot90(np.asarray(mask).astype(float), 1 + self._rotation),
                     levels=[0.5], colors="lime", linewidths=0.8)
 
         if kspace_c is not None:
-            kd = np.log(np.abs(np.squeeze(kspace_c)) + 1e-9)
+            kd = np.rot90(np.log(np.abs(np.squeeze(kspace_c)) + 1e-9))
             im2 = axes[0, 1].imshow(kd, cmap="gray", aspect="auto")
             axes[0, 1].set_title("K-space (log)")
             self._add_cbar(axes[0, 1], im2)
             self._axes_images.append((axes[0, 1], im2, kd, False))
+            self._kspace_axes.append(axes[0, 1])
 
         if traj is not None:
             kx = traj[:, 0] if traj.ndim == 2 else traj[0]
             ky = traj[:, 1] if traj.ndim == 2 else traj[1]
-            # Negate ky so the trajectory plot matches the imshow y-axis convention
-            # (imshow rows increase downward; scatter uses y-up by default).
-            axes[0, 2].scatter(kx, -ky, s=0.5, alpha=0.4, c="royalblue")
-            # axes[0, 2].scatter(kx, ky, s=0.5, alpha=0.4, c="royalblue")
-
+            axes[0, 2].scatter(kx, ky, s=0.5, alpha=0.4, c="royalblue")
             axes[0, 2].set_title("Trajectory")
             axes[0, 2].set_xlabel("kx")
-            axes[0, 2].set_ylabel("ky  (display: −ky)")
-            axes[0, 2].set_aspect("equal")
+            axes[0, 2].set_ylabel("ky")
+            _square_kspace_box(axes[0, 2], np.column_stack([kx, ky]))
 
         # Row 1 — fully-sampled reference comparison (if available), else coils
         reference = r.get("reference_image")
@@ -808,12 +892,13 @@ class ReconTab(QWidget):
             scale = f_scale
             g_n, r_n = rec_img / scale, ref_img / scale
 
-            im_r = axes[1, 0].imshow(_norm(ref_img), cmap="gray", aspect="auto")
+            ref_d = np.rot90(_norm(ref_img))
+            im_r = axes[1, 0].imshow(ref_d, cmap="gray", aspect="auto")
             axes[1, 0].set_title("Fully-Sampled Reference")
             self._add_cbar(axes[1, 0], im_r)
-            self._axes_images.append((axes[1, 0], im_r, _norm(ref_img), True))
+            self._axes_images.append((axes[1, 0], im_r, ref_d, True))
 
-            diff = np.abs(g_n - r_n)
+            diff = np.rot90(np.abs(g_n - r_n))
             im_d = axes[1, 1].imshow(diff, cmap="gray", aspect="auto", vmin=0.0, vmax=0.1)
             axes[1, 1].set_title("Absolute Difference")
             self._add_cbar(axes[1, 1], im_d)
@@ -859,7 +944,7 @@ class ReconTab(QWidget):
             arr = np.squeeze(sens)
             n = min(arr.shape[-1], 3) if arr.ndim == 3 else 1
             for c in range(n):
-                img_s = _norm(arr[:, :, c] if arr.ndim == 3 else arr)
+                img_s = np.rot90(_norm(arr[:, :, c] if arr.ndim == 3 else arr))
                 im_s = axes[1, c].imshow(img_s, cmap="viridis", aspect="auto")
                 axes[1, c].set_title(f"Sensitivity Map — Coil {c}")
                 self._add_cbar(axes[1, c], im_s)
@@ -870,7 +955,7 @@ class ReconTab(QWidget):
             arr = np.squeeze(coil_imgs)
             n = min(arr.shape[-1], 3) if arr.ndim == 3 else 1
             for c in range(n):
-                img_c = np.rot90(_norm(arr[:, :, c] if arr.ndim == 3 else arr), k=3)
+                img_c = np.rot90(_norm(arr[:, :, c] if arr.ndim == 3 else arr))
                 im_c = axes[1, c].imshow(img_c, cmap="gray", aspect="auto")
                 axes[1, c].set_title(f"Coil {c} (adj. NUFFT)")
                 self._add_cbar(axes[1, c], im_c)
@@ -1410,6 +1495,7 @@ class ReconTab(QWidget):
             mask_2d = np.tile(pe_mask.reshape(-1, 1).astype(float), (1, width))
             axes[0, 2].imshow(mask_2d, cmap="gray", aspect="auto", origin="upper",
                               vmin=0, vmax=1)
+            self._schematic_axes.append(axes[0, 2])
             if acs_start is not None and acs_end is not None:
                 axes[0, 2].axhspan(acs_start - 0.5, acs_end - 0.5, alpha=0.35,
                                    color="orange", label="ACS")
@@ -1608,7 +1694,9 @@ class ReconTab(QWidget):
             for out_idx, src_idx in enumerate(selected):
                 ax_src, im_src, data, is_main = self._axes_images[src_idx]
                 ax_dst = flat[out_idx]
-                im_dst = ax_dst.imshow(data, cmap=im_src.get_cmap(), aspect="auto")
+                # As on screen: the drawn (rotated) array, in its proportions.
+                data = np.asarray(im_src.get_array())
+                im_dst = ax_dst.imshow(data, cmap=im_src.get_cmap(), aspect=ax_src.get_aspect())
                 ax_dst.set_title(ax_src.get_title(), fontsize=9)
                 ax_dst.axis("off")
                 if is_main:
@@ -1659,7 +1747,9 @@ class ReconTab(QWidget):
         fig.suptitle(f"All coils — {self._title}", fontsize=10)
         axes = np.array(axes).ravel()
         for c in range(nc):
-            axes[c].imshow(np.rot90(_norm(arr[:, :, c]), k=3), cmap="gray", aspect="auto")
+            # Same orientation as the tab: base rot90 + the Rotate button.
+            axes[c].imshow(np.rot90(_norm(arr[:, :, c]), 1 + self._rotation),
+                           cmap="gray", aspect="auto")
             axes[c].set_title(f"Coil {c}", fontsize=7)
             axes[c].axis("off")
         for c in range(nc, len(axes)):

@@ -26,7 +26,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import numpy as np
-from PyQt5.QtCore import QObject, QSettings, QThread, Qt, pyqtSignal
+from PyQt5.QtCore import QObject, QSettings, QThread, QTimer, Qt, pyqtSignal
 from PyQt5.QtGui import QIcon, QTextCursor
 from PyQt5.QtWidgets import (
     QAction,
@@ -874,6 +874,36 @@ class MainWindow(QMainWindow):
             self._params_panel.load_persistent(s)
         except Exception:
             pass
+        self._fit_to_screen()
+
+    def _fit_to_screen(self) -> None:
+        """Keep the whole window on its screen: no wider or taller than the
+        available area (a saved geometry from a larger monitor, or panel
+        minimum widths, must not push it past the edge), and fully inside it."""
+        try:
+            screen = self.screen() or QApplication.primaryScreen()
+            if screen is None or self.isMaximized() or self.isFullScreen():
+                return
+            avail = screen.availableGeometry()
+            frame, inner = self.frameGeometry(), self.geometry()
+            dw, dh = frame.width() - inner.width(), frame.height() - inner.height()
+            w = min(inner.width(), avail.width() - dw)
+            h = min(inner.height(), avail.height() - dh)
+            if (w, h) != (inner.width(), inner.height()):
+                self.resize(w, h)
+            frame = self.frameGeometry()
+            x = min(max(frame.x(), avail.x()), avail.x() + avail.width() - frame.width())
+            y = min(max(frame.y(), avail.y()), avail.y() + avail.height() - frame.height())
+            if (x, y) != (frame.x(), frame.y()):
+                self.move(max(x, avail.x()), max(y, avail.y()))
+        except Exception:
+            pass   # window placement must never block launch
+
+    def showEvent(self, event) -> None:
+        super().showEvent(event)
+        if not getattr(self, "_fitted_once", False):
+            self._fitted_once = True
+            QTimer.singleShot(0, self._fit_to_screen)     # after the first layout pass
 
     def _save_settings(self) -> None:
         try:

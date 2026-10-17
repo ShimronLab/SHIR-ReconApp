@@ -311,7 +311,7 @@ class FolderPanel(QWidget):
         layout.addLayout(btn_row1)
         layout.addWidget(self._tree, stretch=3)
         layout.addLayout(btn_row2)
-        self.setMinimumWidth(440)
+        self.setMinimumWidth(320)        # the splitter lets the user widen it
 
     # ─── Folder loading ───────────────────────────────────────────────────────
 

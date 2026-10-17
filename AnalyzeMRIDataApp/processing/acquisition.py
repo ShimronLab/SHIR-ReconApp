@@ -797,6 +797,71 @@ def result_summary_line(result: Dict[str, Any]) -> Optional[str]:
     return " · ".join(parts)
 
 
+def trajectory_facts(
+    dat_path: str,
+    traj_raw: np.ndarray,
+    n_lines: int,
+    n_samples: int,
+    n_coils: int,
+    *,
+    json_path: str,
+    json_key: str,
+    rows: List[Tuple[str, Any, Src, str]],
+    summary: str,
+    pixel_mm: Optional[Tuple[float, float]] = None,
+) -> Dict[str, Any]:
+    """
+    Acquisition facts for results placed by a trajectory JSON (band NUFFT,
+    Poisson-disc), in the same form as the Cartesian results, so their tabs get
+    the facts line and the Acquisition… table too. Common rows (sequence,
+    played .seq, trajectory source and k-space extent) are read here;
+    pipeline-specific ``rows`` (name, value, source, detail) follow them.
+    Returns the keys to merge into the result.
+    """
+    from .seq_geometry import played_seq
+    from .utils import read_twix_header, sequence_family
+    facts = AcqFacts()
+    family = sequence_family(dat_path)
+    seq_file = ((read_twix_header(dat_path) or {}).get("Config", {}) or {}).get("SequenceFileName", "")
+    facts.set("sequence family", family or "unknown", Src.HEADER, str(seq_file))
+    if family == "pulseq":
+        info = played_seq(dat_path)
+        where = info["path"] or info["note"] or "not found"
+        facts.set("played .seq", info["name"] or "?", Src.HEADER,
+                  f"signature {info['signature'] or '—'}; {where}")
+    facts.set("geometry source", Src.TRAJ_JSON.value, Src.TRAJ_JSON,
+              f"{Path(json_path).name} [{json_key}]")
+    facts.set("readouts", int(n_lines), Src.MDH, "ADC readouts in the file")
+    facts.set("samples per readout", int(n_samples), Src.MDH)
+    facts.set("coils", int(n_coils), Src.MDH)
+    facts.set("trajectory ↔ data", "matched", Src.DERIVED,
+              f"{len(traj_raw)} trajectory points = {n_lines} × {n_samples} samples")
+    k = np.asarray(traj_raw, float)[:, :2]
+    steps = np.linalg.norm(np.diff(k.reshape(n_lines, n_samples, 2), axis=1), axis=-1)
+    dk = float(np.median(steps)) if steps.size else 0.0
+    if dk > 0:
+        facts.set("readout k-step (1/m)", round(dk, 4), Src.TRAJ_JSON, "spacing of samples along a readout")
+        facts.set("readout FOV (mm)", round(1000.0 / dk, 1), Src.DERIVED, "1 / k-step, including oversampling")
+    kmax = float(np.max(np.abs(k))) if k.size else 0.0
+    if kmax > 0:
+        facts.set("k max (1/m)", round(kmax, 2), Src.TRAJ_JSON)
+        facts.set("nominal resolution (mm)", round(1000.0 / (2 * kmax), 3), Src.DERIVED, "1 / (2 · k max)")
+    for name, value, src, detail in rows:
+        facts.set(name, value, src, detail)
+    out = {"acq_facts": facts.to_dict(), "acq_summary": summary}
+    if pixel_mm:
+        out["pixel_spacing_mm"] = (float(pixel_mm[0]), float(pixel_mm[1]))
+    return out
+
+
+def band_angle_deg(traj_raw: np.ndarray) -> float:
+    """Orientation of a band trajectory: its long axis, 0–180° from +kx toward +ky."""
+    k = np.asarray(traj_raw, float)[:, :2]
+    vals, vecs = np.linalg.eigh(np.cov(k.T))
+    v = vecs[:, int(np.argmax(vals))]
+    return float(np.degrees(np.arctan2(v[1], v[0])) % 180.0)
+
+
 def protocol_signature(dat_path: str, slice_idx: Optional[int] = None) -> Optional[Dict[str, Any]]:
     """
     What makes two Siemens acquisitions comparable, read from the header:

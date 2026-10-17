@@ -130,9 +130,11 @@ def reconstruct_band(
     # matrix (e.g. larger for a 320 acquisition than a 256 one).
     if crop_size is None:
         crop_size = int(round(scan_fov_m / pixel_size))
+        crop_how = f"scan FOV {scan_fov_m * 1e3:.0f} mm / pixel"
         log(f"  pixel_size={pixel_size * 1e3:.3f} mm, crop_size={crop_size} px (auto from FOV)")
     else:
         crop_size = int(crop_size)
+        crop_how = "user override"
         log(f"  pixel_size={pixel_size * 1e3:.3f} mm, crop_size={crop_size} px (user override)")
 
     from .recon_backend import (
@@ -152,6 +154,7 @@ def reconstruct_band(
 
     # ── 8-9. ESPIRiT maps + PICS (SENSE combination) ─────────────────────────
     sens_maps = None
+    combination = "ESPIRiT + PICS (SENSE)"
     try:
         log(f"Computing sensitivity maps (ESPIRiT, calib={calib_width})…")
         sens_maps = espirit_maps(cart_kspace_norm, calib_width, num_maps=1,
@@ -161,9 +164,9 @@ def reconstruct_band(
         combined_sq  = np.squeeze(combined_img)   # (crop, crop) complex
     except (RuntimeError, ImportError) as exc:
         log(f"  SENSE failed ({exc}); falling back to RSS of coil images")
-        # RSS of the cropped adjoint-NUFFT images, transposed to match the
-        # PICS-path orientation (mirrors the cart_kspace (1,0) transpose).
-        combined_sq = np.sqrt(np.sum(np.abs(imgs_per_coil) ** 2, axis=-1)).T
+        combination = f"RSS of coil images (SENSE failed: {exc})"
+        # RSS of the cropped adjoint-NUFFT images (same frame as the PICS path).
+        combined_sq = np.sqrt(np.sum(np.abs(imgs_per_coil) ** 2, axis=-1))
 
     # ── 10. k-space of combined image ─────────────────────────────────────────
     log("Computing k-space of combined image…")
@@ -175,10 +178,33 @@ def reconstruct_band(
             np.fft.fft2(np.fft.ifftshift(combined_sq))
         )
 
+    # ── 11. Acquisition facts (Acquisition… table + facts line) ──────────────
+    from .acquisition import Src, band_angle_deg, trajectory_facts
+    angle = band_angle_deg(traj_raw)
+    pixel_mm = pixel_size * 1e3
+    facts = trajectory_facts(
+        dat_path, traj_raw, dim1, dim2, num_coils,
+        json_path=bands_json_path, json_key=str(band_idx),
+        rows=[
+            ("band", int(band_idx), Src.TRAJ_JSON, f"{Path(bands_json_path).name} key {band_idx}"),
+            ("band angle (°)", round(angle, 2), Src.DERIVED,
+             "long axis of the trajectory, from +kx toward +ky"),
+            ("NUFFT grid", f"{grid_size}×{grid_size}", Src.SETTING, f"trajectory margin {traj_margin} px"),
+            ("image matrix", f"{crop_size}×{crop_size}", Src.DERIVED, crop_how),
+            ("pixel (mm)", round(pixel_mm, 3), Src.DERIVED, "from the trajectory's k max"),
+            ("coil combination", combination, Src.SETTING,
+             f"{active_backend_label()}; ESPIRiT calib {calib_width}, crop {espirit_crop}"),
+        ],
+        summary=(f"Band {band_idx} · {angle:.1f}° · {dim1} readouts × {dim2} samples · "
+                 f"{crop_size}×{crop_size} image"),
+        pixel_mm=(pixel_mm, pixel_mm),
+    )
+
     log("Band reconstruction complete.")
     # NOTE: kspace_orig, traj_raw, cart_kspace are intentionally omitted to
     # keep peak memory low when processing many bands in sequence.
     return {
+        **facts,
         "traj_scaled":      traj_scaled,
         "imgs_per_coil":    imgs_per_coil,    # (crop_size, crop_size, Ncoils)
         "sens_maps":        sens_maps,

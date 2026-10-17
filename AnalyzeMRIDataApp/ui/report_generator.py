@@ -72,13 +72,12 @@ def _suptitle(fig, title: str) -> None:
                  color="#52514e")
 
 
-def _image_aspect():
-    """Physical pixel aspect for image panels drawn as rot90(read × phase)
-    plus the page rotation; 'auto' when the pixel size is unknown."""
-    if not _PAGE_SPACING:
-        return "auto"
-    d_read, d_phase = _PAGE_SPACING
-    return d_phase / d_read if (1 + _PAGE_ROT) % 2 else d_read / d_phase
+def _image_aspect(shape=(1, 1), kspace: bool = False):
+    """Physical aspect for a panel drawn as rot90(read × phase) plus the page
+    rotation (``shape`` = the drawn array's shape): the pixel shape for images
+    (square when unknown), the k-space step for k-space panels."""
+    from processing.imaging import display_aspect
+    return display_aspect(shape, _PAGE_SPACING, 1 + _PAGE_ROT, kspace=kspace)
 
 
 def _imshow_adjusted(
@@ -90,14 +89,15 @@ def _imshow_adjusted(
     brightness: float,
     is_main: bool = False,
     image: bool = False,
+    kspace: bool = False,
     **kwargs,
 ) -> None:
     """imshow with percentile W/L and optional brightness scaling.
 
     Brightness is applied only to *main* reconstructed images (not k-space,
-    sensitivity maps, or the GRAPPA difference image). ``image=True`` marks an
-    image-domain panel drawn as rot90(read × phase): it gets the physical pixel
-    aspect when the pixel size is known.
+    sensitivity maps, or the GRAPPA difference image). ``image=True`` /
+    ``kspace=True`` mark an image- / k-space-domain panel drawn as
+    rot90(read × phase): it keeps its physical proportions.
     """
     data = _rot(data)                      # match the viewer's chosen rotation
     vmin = np.percentile(data, wl_min)
@@ -105,7 +105,7 @@ def _imshow_adjusted(
     if is_main and brightness > 0:
         vmax = vmax / brightness
     vmax = max(float(vmax), float(vmin) + 1e-9)
-    aspect = _image_aspect() if image else "auto"
+    aspect = _image_aspect(np.shape(data), kspace=kspace) if (image or kspace) else "auto"
     ax.imshow(data, cmap=cmap, aspect=aspect, vmin=vmin, vmax=vmax, rasterized=True, **kwargs)
 
 
@@ -140,7 +140,7 @@ def _add_all_coil_sens_page(
     axes = np.array(axes).ravel()
     for c in range(nc_coils):
         _imshow_adjusted(axes[c], orient(arr[..., c]), "viridis",
-                         wl_min, wl_max, brightness, is_main=False)
+                         wl_min, wl_max, brightness, is_main=False, image=True)
         axes[c].set_title(f"Coil {c}", fontsize=7)
         axes[c].axis("off")
     for c in range(nc_coils, len(axes)):
@@ -240,28 +240,35 @@ def _page_nufft(pdf: PdfPages, result: Dict[str, Any], title: str) -> None:
     fig, axes = plt.subplots(nrows, ncols, figsize=(15, 10))
     _suptitle(fig, title)
 
+    # Arrays are (read/kx, phase/ky), drawn np.rot90 like the Cartesian pages:
+    # kx left→right, ky bottom→top — the same axes as the trajectory plot.
     # (0,0) combined image
     if combined is not None:
-        _imshow_adjusted(axes[0, 0], _norm(combined), "gray", wl_min, wl_max, brightness, is_main=True)
+        _imshow_adjusted(axes[0, 0], np.rot90(_norm(combined)), "gray", wl_min, wl_max, brightness, is_main=True, image=True)
     axes[0, 0].set_title("Combined Image")
     axes[0, 0].axis("off")
 
     # (0,1) k-space of combined image
     if kspace_c is not None:
         kd = np.log(np.abs(np.squeeze(kspace_c)) + 1e-9)
-        _imshow_adjusted(axes[0, 1], _norm(kd), "gray", wl_min, wl_max, brightness, is_main=False)
+        _imshow_adjusted(axes[0, 1], np.rot90(_norm(kd)), "gray", wl_min, wl_max, brightness, is_main=False, kspace=True)
         axes[0, 1].set_title("K-space (log)")
         axes[0, 1].axis("off")
 
-    # (0,2) trajectory scatter
+    # (0,2) trajectory scatter, turned with the page rotation like the images
     if traj is not None:
         kx = traj[:, 0] if traj.ndim == 2 else traj[0]
         ky = traj[:, 1] if traj.ndim == 2 else traj[1]
-        # axes[0, 2].scatter(kx, -ky, s=0.5, alpha=0.4, c="royalblue") *** flatten
-        axes[0, 2].scatter(kx, -ky, s=0.5, alpha=0.4, c="royalblue", rasterized=True)
+        xy = np.column_stack([kx, ky])
+        for _ in range(_PAGE_ROT):
+            xy = np.column_stack([-xy[:, 1], xy[:, 0]])          # 90° CCW
+        names = {0: ("kx", "ky"), 1: ("−ky", "kx"), 2: ("−kx", "−ky"), 3: ("ky", "−kx")}[_PAGE_ROT]
+        axes[0, 2].scatter(xy[:, 0], xy[:, 1], s=0.5, alpha=0.4, c="royalblue", rasterized=True)
         axes[0, 2].set_title("Trajectory")
-        axes[0, 2].set_xlabel("kx"); axes[0, 2].set_ylabel("ky  (display: −ky)")
-        axes[0, 2].set_aspect("equal")
+        axes[0, 2].set_xlabel(names[0]); axes[0, 2].set_ylabel(names[1])
+        lim = max(0.5, float(np.max(np.abs(xy))))       # square ±kmax box, like the k-space panel
+        axes[0, 2].set_xlim(-lim, lim); axes[0, 2].set_ylim(-lim, lim)
+        axes[0, 2].set_aspect("equal", adjustable="box")
     else:
         axes[0, 2].axis("off")
 
@@ -271,7 +278,7 @@ def _page_nufft(pdf: PdfPages, result: Dict[str, Any], title: str) -> None:
         n   = min(arr.shape[-1], 3) if arr.ndim == 3 else 1
         for c in range(n):
             img = arr[:, :, c] if arr.ndim == 3 else arr
-            _imshow_adjusted(axes[1, c], np.rot90(_norm(img), k=3), "gray", wl_min, wl_max, brightness, is_main=False)
+            _imshow_adjusted(axes[1, c], np.rot90(_norm(img)), "gray", wl_min, wl_max, brightness, is_main=False, image=True)
             axes[1, c].set_title(f"Coil {c} (adjoint NUFFT)")
             axes[1, c].axis("off")
         for c in range(n, 3):
@@ -281,7 +288,7 @@ def _page_nufft(pdf: PdfPages, result: Dict[str, Any], title: str) -> None:
         n   = min(arr.shape[-1], 3) if arr.ndim == 3 else 1
         for c in range(n):
             img = arr[:, :, c] if arr.ndim == 3 else arr
-            _imshow_adjusted(axes[1, c], _norm(img), "viridis", wl_min, wl_max, brightness, is_main=False)
+            _imshow_adjusted(axes[1, c], np.rot90(_norm(img)), "viridis", wl_min, wl_max, brightness, is_main=False, image=True)
             axes[1, c].set_title(f"Sensitivity Map — Coil {c}")
             axes[1, c].axis("off")
         for c in range(n, 3):
@@ -305,8 +312,8 @@ def _page_nufft(pdf: PdfPages, result: Dict[str, Any], title: str) -> None:
             fig2.suptitle(f"{title}\n— Per-coil adjoint NUFFT images", fontsize=10)
             axes2 = np.array(axes2).ravel()
             for c in range(nc_coils):
-                _imshow_adjusted(axes2[c], np.rot90(_norm(arr[:, :, c]),  k=3), "gray",
-                                 wl_min, wl_max, brightness, is_main=False)
+                _imshow_adjusted(axes2[c], np.rot90(_norm(arr[:, :, c])), "gray",
+                                 wl_min, wl_max, brightness, is_main=False, image=True)
                 axes2[c].set_title(f"Coil {c}", fontsize=7)
                 axes2[c].axis("off")
             for c in range(nc_coils, len(axes2)):
@@ -315,10 +322,10 @@ def _page_nufft(pdf: PdfPages, result: Dict[str, Any], title: str) -> None:
             pdf.savefig(fig2, dpi=80)
             plt.close(fig2)
 
-    # Separate page: all ESPIRiT sensitivity maps (matches the combined-image
-    # orientation used above, i.e. _norm with no transpose).
+    # Separate page: all ESPIRiT sensitivity maps, in the combined image's
+    # orientation (rot90 of the (read, phase) array).
     _add_all_coil_sens_page(pdf, sens, title, wl_min, wl_max, brightness,
-                            orient=_norm)
+                            orient=lambda a: np.rot90(_norm(a)))
 
 
 def _page_fullysamp(pdf: PdfPages, result: Dict[str, Any], title: str) -> None:
@@ -368,7 +375,7 @@ def _page_fullysamp(pdf: PdfPages, result: Dict[str, Any], title: str) -> None:
     if ksp_rss is not None:
         kd = np.rot90(np.log(ksp_rss + 1e-9))
         _imshow_adjusted(axes_row0[2], _norm(kd), "gray",
-                         wl_min, wl_max, brightness, is_main=False)
+                         wl_min, wl_max, brightness, is_main=False, kspace=True)
         axes_row0[2].set_title("K-space (log RSS)")
         axes_row0[2].axis("off")
     else:
@@ -473,12 +480,12 @@ def _page_equispaced(pdf: PdfPages, result: Dict[str, Any], title: str) -> None:
 
     if under_ksp is not None:
         _imshow_adjusted(axes[1, 0], np.rot90(np.log(under_ksp + 1e-9)), "gray",
-                         wl_min, wl_max, brightness, is_main=False)
+                         wl_min, wl_max, brightness, is_main=False, kspace=True)
         axes[1, 0].set_title("Undersampled K-space (log RSS)")
 
     if grappa_ksp is not None:
         _imshow_adjusted(axes[1, 1], np.rot90(np.log(grappa_ksp + 1e-9)), "gray",
-                         wl_min, wl_max, brightness, is_main=False)
+                         wl_min, wl_max, brightness, is_main=False, kspace=True)
         axes[1, 1].set_title(ksp_title)
 
     axes[1, 2].axis("off")
@@ -638,7 +645,8 @@ def _page_retro(pdf: PdfPages, result: Dict[str, Any], title: str) -> None:
     axes[1, 0].axis("off")
 
     if diff_img is not None and method != "none":
-        axes[1, 1].imshow(_rot(np.rot90(diff_img)), cmap="gray", aspect=_image_aspect(),
+        axes[1, 1].imshow(_rot(np.rot90(diff_img)), cmap="gray",
+                          aspect=_image_aspect(np.shape(_rot(np.rot90(diff_img)))),
                           rasterized=True)
         axes[1, 1].set_title("Absolute Difference")
     axes[1, 1].axis("off")
@@ -684,21 +692,24 @@ def _page_retro(pdf: PdfPages, result: Dict[str, Any], title: str) -> None:
     # Row 2: FS k-space | Undersampled k-space | Reconstructed k-space
     if fs_ksp is not None:
         axes[2, 0].imshow(_rot(np.rot90(np.log(fs_ksp + 1e-9))), cmap="gray",
-                          aspect="auto", rasterized=True)
+                          aspect=_image_aspect(np.shape(_rot(np.rot90(fs_ksp))), kspace=True),
+                          rasterized=True)
         axes[2, 0].set_title("FS K-space (log)")
     else:
         axes[2, 0].axis("off")
 
     if under_ksp is not None:
         axes[2, 1].imshow(_rot(np.rot90(np.log(under_ksp + 1e-9))), cmap="gray",
-                          aspect="auto", rasterized=True)
+                          aspect=_image_aspect(np.shape(_rot(np.rot90(under_ksp))), kspace=True),
+                          rasterized=True)
         axes[2, 1].set_title("Undersampled K-space (log)")
     else:
         axes[2, 1].axis("off")
 
     if recon_ksp is not None:
         axes[2, 2].imshow(_rot(np.rot90(np.log(recon_ksp + 1e-9))), cmap="gray",
-                          aspect="auto", rasterized=True)
+                          aspect=_image_aspect(np.shape(_rot(np.rot90(recon_ksp))), kspace=True),
+                          rasterized=True)
         axes[2, 2].set_title(f"{method_label} K-space (log)")
     else:
         axes[2, 2].axis("off")

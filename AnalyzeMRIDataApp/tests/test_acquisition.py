@@ -215,8 +215,17 @@ def test_result_tab_shows_facts_strip_and_true_aspect(qtbot, siemens_pf_file):
     # Image drawn as rot90(read × phase): rows are phase → aspect = Δphase / Δread.
     d_read, d_phase = res["pixel_spacing_mm"]
     assert image_ax.get_aspect() == pytest.approx(d_phase / d_read)
-    assert kspace_ax.get_aspect() == "auto"
-    assert len(kspace_ax.child_axes) == 1                   # the strip, beside the data
+    # k-space keeps its physical proportions too: Δk = 1 / (N · pixel) per axis
+    n_read, n_phase = np.shape(res["kspace_rss"])[:2]
+    assert kspace_ax.get_aspect() == pytest.approx((n_read * d_read) / (n_phase * d_phase))
+    # child insets: the sampling strip left of the data, the colorbar right of it —
+    # beside the image, never on top of it
+    tab._canvas.draw()
+    box = kspace_ax.get_position()
+    kids = sorted(kspace_ax.child_axes, key=lambda c: c.get_position().x0)
+    assert len(kids) == 2
+    assert kids[0].get_position().x1 <= box.x0 + 1e-6        # strip, left of the data
+    assert kids[1].get_position().x0 >= box.x1 - 1e-6        # colorbar, right of it
 
     tab._on_rotate()                                        # odd → even total rotation
     assert next(ax for ax, _im, _d, main in tab._axes_images if main).get_aspect() == \
@@ -262,3 +271,27 @@ def test_pulseq_and_unreadable_files_keep_the_old_path(monkeypatch):
     monkeypatch.setattr(utils, "read_twix_header",
                         lambda _p: {"Config": {"SequenceFileName": "%CustomerSeq%\\pulseq"}})
     assert acquire_cartesian("scan.dat") is None
+
+
+def test_trajectory_facts_describe_a_band():
+    """Band / Poisson results get the same facts table as Cartesian ones, read
+    from the trajectory: readouts, k-step and FOV, and the band's angle."""
+    from processing.acquisition import Src, band_angle_deg, trajectory_facts
+    n_lines, n_samples, dk = 6, 32, 4.0                       # 1/m → FOV 250 mm
+    th = np.radians(30.0)
+    along, across = np.array([np.cos(th), np.sin(th)]), np.array([-np.sin(th), np.cos(th)])
+    u = (np.arange(n_samples) - n_samples // 2) * dk
+    v = (np.arange(n_lines) - n_lines // 2) * dk
+    traj = (u[None, :, None] * along + v[:, None, None] * across).reshape(-1, 2)
+    assert band_angle_deg(traj) == pytest.approx(30.0)
+    out = trajectory_facts("missing.dat", traj, n_lines, n_samples, 8,
+                           json_path="/x/Bands.json", json_key="2",
+                           rows=[("band", 2, Src.TRAJ_JSON, "")], summary="Band 2",
+                           pixel_mm=(1.0, 1.0))
+    f = out["acq_facts"]
+    assert f["geometry source"]["detail"] == "Bands.json [2]"
+    assert (f["readouts"]["value"], f["samples per readout"]["value"], f["coils"]["value"]) == (6, 32, 8)
+    assert f["readout k-step (1/m)"]["value"] == pytest.approx(dk)
+    assert f["readout FOV (mm)"]["value"] == pytest.approx(250.0)
+    assert f["band"]["value"] == 2 and out["acq_summary"] == "Band 2"
+    assert out["pixel_spacing_mm"] == (1.0, 1.0)

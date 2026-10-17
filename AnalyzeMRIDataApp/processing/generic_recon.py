@@ -179,7 +179,7 @@ def _nufft_zerofill_result(
     imgs_per_coil, _cart = nufft_adjoint_to_cartesian(
         bart_traj, kspace_data, grid_size, crop, log=log,
     )
-    combined = np.sqrt(np.sum(np.abs(imgs_per_coil) ** 2, axis=-1)).T
+    combined = np.sqrt(np.sum(np.abs(imgs_per_coil) ** 2, axis=-1))
     kspace_combined = _centered_fft2(combined)
     log("Zero-fill RSS reconstruction complete.")
     return {

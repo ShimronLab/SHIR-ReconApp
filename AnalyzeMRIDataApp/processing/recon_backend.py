@@ -340,8 +340,10 @@ def nufft_adjoint_to_cartesian(
     """
     Grid non-cartesian data and return:
       imgs_per_coil : (crop, crop, Ncoils)   cropped adjoint-NUFFT coil images
-      cart_kspace   : (crop, crop, 1, Ncoils) Cartesian k-space (orientation-
-                      corrected via the historical (1,0,2,3) transpose)
+      cart_kspace   : (crop, crop, 1, Ncoils) Cartesian k-space
+
+    Both are in the trajectory's own frame: axis 0 follows kx (bart_traj[0]),
+    axis 1 follows ky — the (read, phase) frame of the Cartesian pipelines.
 
     `bart_traj` is (3, dim1, dim2) in grid-index units ([-grid/2, grid/2]);
     `kspace_coilfirst` is (Ncoils, dim1, dim2).
@@ -380,7 +382,6 @@ def nufft_adjoint_to_cartesian(
             bitmask = run_bart("bitmask", "0", "1").strip()
             run_bart("fft", bitmask, cxy_cfl, cart_cfl)
             cart_kspace = readcfl(cart_cfl)           # (crop, crop, 1, Ncoils)
-            cart_kspace = np.transpose(cart_kspace, (1, 0, 2, 3))
             return imgs_per_coil, cart_kspace
 
     # sigpy fallback
@@ -392,12 +393,10 @@ def nufft_adjoint_to_cartesian(
     imgs = np.moveaxis(np.asarray(imgs), 0, -1)       # (grid, grid, Ncoils)
     imgs_per_coil = _center_crop2d(imgs, crop_size)
 
-    # Cartesian k-space of the cropped coil images (centered 2-D FFT), then the
-    # same orientation transpose the BART path applies.
+    # Cartesian k-space of the cropped coil images (centered 2-D FFT).
     cart = np.fft.fftshift(np.fft.fft2(np.fft.ifftshift(imgs_per_coil, axes=(0, 1)),
                                        axes=(0, 1)), axes=(0, 1))
     cart_kspace = cart[:, :, np.newaxis, :]           # (crop, crop, 1, Ncoils)
-    cart_kspace = np.transpose(cart_kspace, (1, 0, 2, 3))
     return imgs_per_coil, cart_kspace
 
 

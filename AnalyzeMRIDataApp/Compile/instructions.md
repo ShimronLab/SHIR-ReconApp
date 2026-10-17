@@ -369,7 +369,8 @@ For Siemens product scans the tab also shows:
 - a **facts line** under the controls, e.g.
   `PF 7/8 · 235/269 lines · R 1 · phase OS 0% · readout OS 2× · prewhitened`;
 - **Acquisition…** — every acquisition fact the app read, and where it came from
-  (header, line counters, noise scan, data, or your settings);
+  (header, line counters, noise scan, data, or your settings); band and Poisson tabs
+  list their trajectory facts (band angle, readouts, sampled lines, R, pixel size);
 - a **sampling strip** beside the k-space: blue = acquired, green = calibration,
   grey = skipped by acceleration, orange = never acquired (partial Fourier);
 - **Show filled k-space** — switch the k-space between what was acquired and
@@ -377,7 +378,9 @@ For Siemens product scans the tab also shows:
 - **Score anyway** — when the reference is not comparable (§4c).
 
 Images are drawn with their true pixel size, so a 0.42 × 0.60 mm scan is not
-stretched into a square. The PDF report adds the same facts under each page title
+stretched to fill the panel; k-space panels use the matching k-space step and the
+trajectory plot a square box, so band, k-space and image keep the same geometry.
+The PDF report adds the same facts under each page title
 and an **Acquisition** page with the facts, the reference verdict and the
 parameters the run actually used.
 

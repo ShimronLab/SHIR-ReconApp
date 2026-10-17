@@ -237,6 +237,32 @@ def reconstruct_poisson(
     calib = min(int(calib_width), acs_width) if acs_width > 0 else int(calib_width)
     log(f"  fully-sampled ACS block ≈ {acs_width} lines → ESPIRiT calib {calib}")
 
+    def _facts(recon_desc: str) -> Dict[str, Any]:
+        """Acquisition facts for the Acquisition… table and the facts line."""
+        from .acquisition import Src, trajectory_facts
+        dkx = float(np.median(np.abs(np.diff(kx_line)))) if kx_line.size > 1 else 0.0
+        px = 1000.0 / (dkx * n_read0) if dkx > 0 else None           # FOV_read / n_x
+        py = 1000.0 / (dky * n_phase) if dky > 0 else None
+        rows = [
+            ("matrix", f"{n_x}×{n_phase}", Src.DERIVED,
+             "readout from the kx extent; phase grid holds every sampled ky"),
+            ("phase-encode lines", f"{n_sampled}/{n_phase}", Src.TRAJ_JSON, "distinct ky lines sampled"),
+            ("R", round(actual_r, 2), Src.DERIVED, "phase-encode lines on the grid / sampled"),
+            ("ACS block (lines)", int(acs_width), Src.DERIVED, "longest run of consecutive sampled lines"),
+            ("readout OS", int(os_read), Src.DERIVED,
+             f"{n_read0} samples per readout over a kx extent of ≈{n_x_traj} grid steps"),
+            ("reconstruction", recon_desc, Src.SETTING, ""),
+        ]
+        if px and py:
+            rows.append(("pixel (mm)", f"{px:.3f}×{py:.3f}", Src.DERIVED, "FOV / matrix, from the k-steps"))
+        return trajectory_facts(
+            dat_path, traj_raw, n_lines, n_read0, n_coils,
+            json_path=poisson_json_path, json_key="0", rows=rows,
+            summary=(f"{n_sampled}/{n_phase} lines · R {actual_r:.2f} · ACS {acs_width} · "
+                     f"readout OS {os_read}×"),
+            pixel_mm=(px, py) if px and py else None,
+        )
+
     # Per-coil images (kept so the coil panels / All-coils viewer keep working).
     imgs_per_coil = _ifft2c(full_k)                             # (read, phase, coils)
     zf_image = np.sqrt(np.sum(np.abs(imgs_per_coil) ** 2, axis=2))
@@ -248,6 +274,7 @@ def reconstruct_poisson(
         kspace_combined = _centered_fft2(combined)
         log("Zero-fill reconstruction complete.")
         return {
+            **_facts("zero-fill RSS"),
             "traj_scaled":     traj_scaled,
             "imgs_per_coil":   imgs_per_coil,
             "sens_maps":       None,
@@ -300,7 +327,11 @@ def reconstruct_poisson(
 
     kspace_combined = _centered_fft2(combined)
     log("Poisson-disc CS reconstruction complete.")
+    recon_desc = (f"CS PICS ℓ1-wavelet (λ={lambda_wav}, {max_iter} iterations, "
+                  f"ESPIRiT calib {calib}; {active_backend_label()})" if sens_maps is not None
+                  else "zero-fill RSS (CS PICS failed)")
     return {
+        **_facts(recon_desc),
         "traj_scaled":     traj_scaled,
         "imgs_per_coil":   imgs_per_coil,
         "sens_maps":       sens_maps,

@@ -176,10 +176,19 @@ The app retrospectively applies the chosen mask to the fully-sampled k-space and
   `swapPE` reference has readout/phase swapped, i.e. a rotated image).
 
 ### 5. View results
-Each completed reconstruction appears as a new **tab** in the results viewer:
+Each completed reconstruction appears as a new **tab** in the results viewer.
+Every tab and PDF page draws the data the same way, straight from the acquisition
+frame: **readout (kx) left → right, phase encode (ky) bottom → top**. Band and
+Poisson tabs use the same axes for their trajectory plot, so a band lies at the
+same angle in the k-space panel and the trajectory panel (band *i* of 16 at
+*i* × 11.25°). No rotation is applied to the data; use **Rotate** to turn the view.
+Panels keep their physical proportions rather than stretching to the window: images
+use the real pixel size (square pixels when it is unknown), k-space panels the
+matching k-space step, and the trajectory plot a square ±kmax box.
 - **W/L sliders** — adjust image window/level (min%/max% of data range).
-- **⟳ Rotate 90°** — rotate all images in the tab (per-tab); the chosen
-  orientation is also applied in the PDF report.
+- **⟳ Rotate 90°** — rotate all images in the tab (per-tab), together with the
+  trajectory plot and the All-coils window; the chosen orientation is also
+  applied in the PDF report.
 - **Ref orient** (Equispaced/Poisson with a reference) — orientation of the
   fully-sampled reference relative to the recon. **Auto** tries all 8
   rotations/flips and keeps the best-correlated one (shown in the dropdown and
@@ -194,13 +203,16 @@ For scans whose geometry is read from the file (Siemens product scans):
   `PF 7/8 · 235/269 lines · R 1 · phase OS 0% · readout OS 2× · prewhitened`.
 - **Acquisition…** — the full table of acquisition facts, each with the **source** it came
   from (header, per-readout tag, noise scan, data, derived, setting); doubtful values are flagged.
+  Band and Poisson tabs have it too: played `.seq` and signature, trajectory JSON and key,
+  readouts × samples, k-step / FOV / k max, and the band's angle, NUFFT grid and pixel size
+  (band) or matrix, sampled lines, R and ACS block (Poisson).
 - **Sampling strip** — a thin coloured bar *beside* the k-space (never drawn over it): blue
   acquired, green calibration, grey skipped by acceleration, orange never acquired (partial
   Fourier).
 - **Show filled k-space** — switch the k-space panel between what was acquired and what the
   reconstruction filled in.
 - **Physical aspect** — images are drawn with the true pixel spacing (e.g. 0.42 × 0.60 mm),
-  not stretched to a square.
+  not stretched to the panel; k-space with the matching k-space step.
 - **Score anyway** — appears when the reference is not comparable (see
   [Reference comparability](#reference-comparability)); scores computed this way are labelled.
 

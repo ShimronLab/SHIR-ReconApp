@@ -93,6 +93,28 @@ def crop_center(arr: np.ndarray, n: int, axis: int) -> np.ndarray:
     return arr[tuple(index)]
 
 
+def display_aspect(shown_shape, spacing_mm, turns: int, kspace: bool = False) -> float:
+    """
+    Matplotlib ``aspect`` (height / width of one drawn pixel) for a panel that
+    shows ``np.rot90(a, turns)`` of a (read, phase) array ``a``, so it keeps its
+    physical proportions instead of stretching to the panel.
+
+    ``shown_shape`` is the drawn array's shape; ``spacing_mm`` the image pixel
+    size (read, phase), or None for square pixels. Image panels use the pixel
+    size; k-space panels the k-space step 1 / (N · pixel) along each axis, so a
+    square acquisition is square in both domains and angles are true.
+    """
+    d_read, d_phase = spacing_mm if spacing_mm else (1.0, 1.0)
+    odd = turns % 2 == 1                     # odd: phase runs down the rows
+    h, w = shown_shape[:2]
+    n_read, n_phase = (w, h) if odd else (h, w)
+    if kspace:
+        s_read, s_phase = 1.0 / (n_read * d_read), 1.0 / (n_phase * d_phase)
+    else:
+        s_read, s_phase = d_read, d_phase
+    return s_phase / s_read if odd else s_read / s_phase
+
+
 def norm01(img: np.ndarray) -> np.ndarray:
     """Min-max normalise the magnitude of ``img`` to [0, 1]."""
     arr = np.abs(np.squeeze(img)).astype(float)
