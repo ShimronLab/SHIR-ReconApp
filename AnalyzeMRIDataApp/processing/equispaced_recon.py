@@ -608,7 +608,7 @@ def reconstruct_equispaced(
         if progress_cb:
             progress_cb(msg)
 
-    from .acquisition import acquire_cartesian, finalize_image, result_extras
+    from .acquisition import acquire_cartesian, finalize_image, kspace_export, result_extras
     from .partial_fourier import describe, pf_fill
     from .utils import crop_readout_oversampling
 
@@ -830,6 +830,7 @@ def reconstruct_equispaced(
 
     # Pre-compute 2-D RSS k-space magnitudes for display
     undersampled_kspace_rss = np.sqrt(np.sum(np.abs(full_kspace) ** 2, axis=2)).astype(np.float32)
+    exported = kspace_export(full_kspace)
     if recon_kspace is not None:
         recon_kspace_rss = np.sqrt(np.sum(np.abs(recon_kspace) ** 2, axis=2)).astype(np.float32)
     else:
@@ -963,6 +964,7 @@ def reconstruct_equispaced(
             "espirit_num_maps": espirit_num_maps,
             "tse":              _tse,
         },
+        **exported,
     }
     if asm is not None:
         result.update(result_extras(asm))

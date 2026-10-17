@@ -146,6 +146,11 @@ def reconstruct_band(
     imgs_per_coil, cart_kspace = nufft_adjoint_to_cartesian(
         bart_traj, kspace_data, grid_size, crop_size, log=log,
     )   # imgs_per_coil (crop, crop, Ncoils); cart_kspace (crop, crop, 1, Ncoils)
+    # Raw samples (readouts, samples, coils), each paired with its (kx, ky);
+    # make_bart_trajectory reshapes the trajectory the same (C) way.
+    from .acquisition import kspace_export
+    exported = kspace_export(np.moveaxis(kspace_data, 0, -1),
+                             trajectory=traj_raw.reshape(dim1, dim2, 2))
     del kspace_data
 
     # ── 7. Normalise k-space ──────────────────────────────────────────────────
@@ -211,6 +216,7 @@ def reconstruct_band(
         "combined_img":     combined_sq,
         "kspace_combined":  kspace_combined,
         "band_idx":         band_idx,
+        **exported,
         "params": {
             "grid_size":   grid_size,
             "calib_width": calib_width,

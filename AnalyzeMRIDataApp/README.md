@@ -217,14 +217,22 @@ For scans whose geometry is read from the file (Siemens product scans):
   [Reference comparability](#reference-comparability)); scores computed this way are labelled.
 
 ### 6. Save output
-In the **Output** group (right panel), tick **Generate PDF report** and/or **Save combined
-images (.npy)**, then click **💾 Save output**. A **Save As** dialog opens **per scan
+In the **Output** group (right panel), tick **Generate PDF report**, **Save combined
+images (.npy)** and/or **Save raw k-space (.npy)**, then click **💾 Save output**. A **Save As** dialog opens **per scan
 folder**, starting in the current **Save directory** and pre-filled with the folder's name
 (editable). The name you confirm for a folder becomes the prefix for that folder's files:
 
 - **PDF** — one per folder: `<name>.pdf` (a multi-page report for that folder's results).
 - **`.npy`** — one per result: `<name>.npy`, or `<name>_<result-label>.npy` when a folder
   has several results.
+- **Raw k-space** — `<name>_kspace.npy` per result: the measured multi-coil k-space,
+  complex64, before any reconstruction. Cartesian scans: `(read, phase, coils)` on the full
+  phase-encode grid as SHIR placed it (never-acquired lines are zero; Siemens data
+  prewhitened when that is on). The Simulator saves the fully sampled k-space it started from
+  (its mask is the tab's PE mask). Band and other non-Cartesian scans: `(readouts, samples,
+  coils)` plus `<name>_trajectory.npy`, `(readouts, samples, 2)` = (kx, ky) of every sample
+  in the trajectory file's units. The k-space is kept only for runs started while the box is
+  ticked.
 
 The two checkboxes also **auto-save** at the end of **Run Selected** — that path writes
 `results/report_<ScanFolder>.pdf` and `<label>.npy` into the **Save directory**. Use
@@ -483,6 +491,7 @@ Outputs (per result tab — 3 × 3 grid):
 | Output | Save directory | `~/Documents/SHIR` | All | Default directory for PDF reports and `.npy` image files; also the starting folder for the **Save output** dialog. Created on first save; verified writable at run start |
 | Output | Generate PDF report | — | All | Include a PDF report when saving (auto-saved after all jobs complete, and saved by **Save output**) |
 | Output | Save combined images (.npy) | — | All | Include combined images as `.npy` when saving (auto-saved after all jobs complete, and saved by **Save output**) |
+| Output | Save raw k-space (.npy) | off | All | Keep each result's measured multi-coil k-space (and trajectory, for non-Cartesian scans) and save it as `<name>_kspace.npy` / `<name>_trajectory.npy` — see [Save output](#6-save-output) |
 | Output | 💾 Save output | — | All | Save the checked outputs per scan folder; prompts for a location/name (pre-filled from the folder), works any time after a run |
 
 ---

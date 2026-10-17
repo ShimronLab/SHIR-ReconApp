@@ -87,7 +87,9 @@ def _raw_rss_result(
     images = _ifft2c(kspace_3d)
     image_rss = np.sqrt(np.sum(np.abs(images) ** 2, axis=2))
     kspace_rss = np.sqrt(np.sum(np.abs(kspace_3d) ** 2, axis=2)).astype(np.float32)
+    from .acquisition import kspace_export
     return {
+        **kspace_export(kspace_3d),
         "kspace_rss":     kspace_rss,
         "image_rss":      image_rss,
         "image_combined": image_rss,
@@ -182,7 +184,10 @@ def _nufft_zerofill_result(
     combined = np.sqrt(np.sum(np.abs(imgs_per_coil) ** 2, axis=-1))
     kspace_combined = _centered_fft2(combined)
     log("Zero-fill RSS reconstruction complete.")
+    from .acquisition import kspace_export
     return {
+        **kspace_export(np.moveaxis(kspace_data, 0, -1),
+                        trajectory=np.asarray(traj_raw).reshape(dim1, dim2, 2)),
         "traj_scaled":     scale_trajectory(traj_raw),
         "imgs_per_coil":   imgs_per_coil,
         "cart_kspace":     None,
@@ -249,7 +254,7 @@ def _reconstruct_cs_pattern(
     from the k-space itself (``bart pattern``; nonzero test without BART),
     then ESPIRiT + PICS L1-wavelet — the same machinery equispaced_recon uses.
     """
-    from .acquisition import acquire_cartesian, finalize_image, result_extras
+    from .acquisition import acquire_cartesian, finalize_image, kspace_export, result_extras
     from .recon_backend import (
         active_backend_label, espirit_maps, pics, use_bart,
     )
@@ -263,6 +268,7 @@ def _reconstruct_cs_pattern(
         kspace_3d = _read_cs_legacy(dat_path, tse, necho, te1, teeff, slice_selector_cb, log)
     n_read, n_phase, _ = kspace_3d.shape               # (Nread, Nphase, Ncoils)
     k4d = kspace_3d[:, :, np.newaxis, :]
+    exported = kspace_export(kspace_3d)
 
     # ── Sampling mask from the data itself ───────────────────────────────────
     log("Extracting sampling pattern from k-space…")
@@ -310,6 +316,7 @@ def _reconstruct_cs_pattern(
         extras["pf_method"] = "model (PICS)"
     return {
         **extras,
+        **exported,
         "imgs_per_coil":   None,
         "cart_kspace":     None,
         "sens_maps":       sens_maps,

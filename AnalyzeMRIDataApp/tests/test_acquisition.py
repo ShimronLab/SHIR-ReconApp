@@ -295,3 +295,58 @@ def test_trajectory_facts_describe_a_band():
     assert f["readout FOV (mm)"]["value"] == pytest.approx(250.0)
     assert f["band"]["value"] == 2 and out["acq_summary"] == "Band 2"
     assert out["pixel_spacing_mm"] == (1.0, 1.0)
+
+
+# ── Raw k-space export (Output → Save raw k-space) ──────────────────────────
+
+@pytest.fixture
+def keep_kspace():
+    from processing import acquisition
+    acquisition.set_keep_kspace(True)
+    yield
+    acquisition.set_keep_kspace(False)
+
+
+def test_kspace_export_is_off_by_default(siemens_pf_file):
+    from processing.acquisition import kspace_export
+    from processing.fullysamp_recon import reconstruct_fullysamp
+    assert kspace_export(np.ones((2, 2, 1))) == {}
+    assert "raw_kspace" not in reconstruct_fullysamp(siemens_pf_file)
+
+
+def test_fully_sampled_exports_measured_kspace(siemens_pf_file, keep_kspace):
+    """The export is the measured multi-coil k-space on the full grid, before
+    the partial-Fourier fill, so never-acquired lines stay zero."""
+    from processing.fullysamp_recon import reconstruct_fullysamp
+    res = reconstruct_fullysamp(siemens_pf_file, pf_method="homodyne")
+    k = res["raw_kspace"]
+    assert k.dtype == np.complex64 and k.shape[:2] == (32, 269) and k.ndim == 3
+    assert np.all(k[:, 235:] == 0)
+    assert np.allclose(np.sqrt(np.sum(np.abs(k) ** 2, axis=2)), res["kspace_rss"], rtol=1e-5)
+    assert "raw_trajectory" not in res
+
+
+def test_trajectory_export_pairs_each_sample(keep_kspace):
+    """(readouts, samples, 2) uses the same sample order as the NUFFT input."""
+    from processing.acquisition import kspace_export
+    from processing.utils import make_bart_trajectory
+    dim1, dim2 = 3, 5
+    traj_raw = np.random.default_rng(0).uniform(-100, 100, (dim1 * dim2, 2))
+    bart_traj, _ = make_bart_trajectory(traj_raw, dim1, dim2, N_grid=64)
+    out = kspace_export(np.zeros((dim1, dim2, 2)), trajectory=traj_raw.reshape(dim1, dim2, 2))
+    scale = bart_traj[0, 1, 2] / traj_raw[1 * dim2 + 2, 0]
+    assert np.allclose(np.moveaxis(bart_traj[:2], 0, -1), out["raw_trajectory"] * scale, rtol=1e-5)
+
+
+@pytest.mark.gui
+def test_save_output_writes_kspace_files(qtbot, tmp_path):
+    from ui.main_window import MainWindow
+    win = MainWindow()
+    qtbot.addWidget(win)
+    k = np.ones((4, 4, 2), np.complex64)
+    traj = np.zeros((4, 4, 2), np.float32)
+    paths = win._write_kspace({"raw_kspace": k, "raw_trajectory": traj}, tmp_path / "scan")
+    assert [p.split("\\")[-1].split("/")[-1] for p in paths] == ["scan_kspace.npy",
+                                                                 "scan_trajectory.npy"]
+    assert np.array_equal(np.load(paths[0]), k)
+    assert win._write_kspace({"label": "x"}, tmp_path / "none") == []

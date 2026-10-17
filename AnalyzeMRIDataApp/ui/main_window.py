@@ -194,6 +194,7 @@ class ReconWorker(QObject):
             recon_backend.set_backend_mode(params.get("recon_backend", "auto"))
             recon_backend.set_espirit_threshold(params.get("espirit_thresh"))
             acquisition.set_prewhitening(params.get("prewhiten", True))
+            acquisition.set_keep_kspace(params.get("save_kspace", False))
             seq_geometry.set_library_dir(params.get("seq_library_dir") or None)
             seq_geometry.set_seq_request_handler(self._request_seq_file)
             cb(f"Recon engine: {recon_backend.active_backend_label()} "
@@ -606,7 +607,7 @@ class MainWindow(QMainWindow):
         self._params = params
         self._npy_warned = False
         self._warn_questionable_params(params)
-        if (params.get("gen_pdf") or params.get("save_npy")) \
+        if (params.get("gen_pdf") or params.get("save_npy") or params.get("save_kspace")) \
                 and not self._check_save_dir_writable(params.get("save_dir", "")):
             return
 
@@ -716,8 +717,8 @@ class MainWindow(QMainWindow):
         self._log_msg(f"  ✓  {label}")
         self._update_result_actions()
 
-        # Auto-save .npy if requested
-        if self._params.get("save_npy"):
+        # Auto-save .npy (images and/or raw k-space) if requested
+        if self._params.get("save_npy") or self._params.get("save_kspace"):
             self._save_npy(result)
 
     def _on_result_closed(self, result: object) -> None:
@@ -1015,11 +1016,13 @@ class MainWindow(QMainWindow):
         save_dir = p.get("save_dir", ".")
         gen_pdf  = bool(p.get("gen_pdf"))
         save_npy = bool(p.get("save_npy"))
+        save_kspace = bool(p.get("save_kspace"))
 
-        if not gen_pdf and not save_npy:
+        if not gen_pdf and not save_npy and not save_kspace:
             QMessageBox.information(
                 self, "Nothing selected",
-                "Check 'Generate PDF report' and/or 'Save combined images (.npy)' first.",
+                "Check 'Generate PDF report', 'Save combined images (.npy)' and/or "
+                "'Save raw k-space (.npy)' first.",
             )
             return
 
@@ -1098,6 +1101,13 @@ class MainWindow(QMainWindow):
                     saved.append(str(npy_path))
                     self._log_msg(f"  .npy saved: {npy_path}")
 
+            if save_kspace:
+                multi = len(group_results) > 1
+                for r in group_results:
+                    label = r.get("label", "result").replace(" ", "_").replace("—", "-")
+                    base = out_dir / (f"{stem}_{label}" if multi else stem)
+                    saved.extend(self._write_kspace(r, base))
+
         if saved:
             self._status_label.setText(f"Saved {len(saved)} file(s)")
             QMessageBox.information(
@@ -1126,11 +1136,13 @@ class MainWindow(QMainWindow):
             save_dir = Path(self._params.get("save_dir", "."))
             save_dir.mkdir(parents=True, exist_ok=True)
             label = result.get("label", "result").replace(" ", "_").replace("—", "-")
-            combined = self._pick_combined(result)
+            combined = self._pick_combined(result) if self._params.get("save_npy") else None
             if combined is not None:
                 npy_path = save_dir / f"{label}.npy"
                 np.save(str(npy_path), np.squeeze(combined))
                 self._log_msg(f"  .npy saved: {npy_path}")
+            if self._params.get("save_kspace"):
+                self._write_kspace(result, save_dir / label)
         except OSError as exc:
             # A bad/unwritable save dir must not kill the run; warn once.
             self._log_msg(f"  ⚠ .npy auto-save failed: {exc}", error=True)
@@ -1139,6 +1151,26 @@ class MainWindow(QMainWindow):
                 self._log_msg(
                     "  ⚠ Check the Save directory in the Output panel.", error=True
                 )
+
+    def _write_kspace(self, result: Dict, base: Path) -> List[str]:
+        """
+        Save a result's measured k-space as <base>_kspace.npy (and, for
+        non-Cartesian scans, <base>_trajectory.npy); return the paths written.
+        """
+        kspace = result.get("raw_kspace")
+        if kspace is None:
+            self._log_msg(f"  No raw k-space kept for {result.get('label', 'result')} — "
+                          "tick 'Save raw k-space (.npy)' before running it.")
+            return []
+        paths = [base.parent / f"{base.name}_kspace.npy"]
+        np.save(str(paths[0]), kspace)
+        trajectory = result.get("raw_trajectory")
+        if trajectory is not None:
+            paths.append(base.parent / f"{base.name}_trajectory.npy")
+            np.save(str(paths[1]), trajectory)
+        for path in paths:
+            self._log_msg(f"  k-space saved: {path}")
+        return [str(path) for path in paths]
 
     def _on_all_coils(self) -> None:
         if not self._results_viewer.show_all_coils_current():

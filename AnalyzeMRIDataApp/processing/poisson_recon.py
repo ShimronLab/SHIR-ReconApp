@@ -265,6 +265,8 @@ def reconstruct_poisson(
 
     # Per-coil images (kept so the coil panels / All-coils viewer keep working).
     imgs_per_coil = _ifft2c(full_k)                             # (read, phase, coils)
+    from .acquisition import kspace_export
+    exported = kspace_export(full_k)
     zf_image = np.sqrt(np.sum(np.abs(imgs_per_coil) ** 2, axis=2))
 
     # ── 4. Zero-fill early exit ──────────────────────────────────────────────
@@ -288,7 +290,8 @@ def reconstruct_poisson(
                 "lambda_wav":  lambda_wav,
                 "max_iter":    max_iter,
             },
-            **_reference_extra(combined),
+            **exported,
+        **_reference_extra(combined),
         }
 
     # ── 5. Normalise → ESPIRiT → mask-aware CS PICS (ℓ1-wavelet) ─────────────
@@ -345,5 +348,6 @@ def reconstruct_poisson(
             "lambda_wav":  lambda_wav,
             "max_iter":    max_iter,
         },
+        **exported,
         **_reference_extra(combined),
     }

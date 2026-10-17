@@ -80,7 +80,7 @@ def reconstruct_fullysamp(
         if progress_cb:
             progress_cb(msg)
 
-    from .acquisition import acquire_cartesian, finalize_image, result_extras
+    from .acquisition import acquire_cartesian, finalize_image, kspace_export, result_extras
     from .partial_fourier import describe, pf_fill
 
     asm = acquire_cartesian(dat_path, slice_selector_cb=slice_selector_cb, log=log)
@@ -103,6 +103,7 @@ def reconstruct_fullysamp(
     # Pre-compute 2-D RSS k-space magnitude for display (saves storing 3-D
     # complex array); it shows what was measured, never-acquired lines as zeros.
     kspace_rss = np.sqrt(np.sum(np.abs(measured) ** 2, axis=2)).astype(np.float32)
+    exported = kspace_export(measured)
     # When homodyne / POCS filled never-acquired lines, keep that k-space too so
     # the viewer can show "measured" vs "after reconstruction".
     kspace_filled_rss = (np.sqrt(np.sum(np.abs(kspace_3d) ** 2, axis=2)).astype(np.float32)
@@ -156,6 +157,7 @@ def reconstruct_fullysamp(
             "calib_width": calib_width,
             "tse":         _tse,
         },
+        **exported,
     }
     if asm is not None:
         result.update(result_extras(asm))

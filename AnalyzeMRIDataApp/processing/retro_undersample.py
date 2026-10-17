@@ -257,7 +257,8 @@ def reconstruct_retro(
         if progress_cb:
             progress_cb(msg)
 
-    from .acquisition import LineCat, acquire_cartesian, finalize_image, result_extras
+    from .acquisition import (LineCat, acquire_cartesian, finalize_image, kspace_export,
+                              result_extras)
     from .partial_fourier import describe, pf_fill
 
     # ── 1. Read k-space (Nreadout, Nphase, Ncoils) ────────────────────────────
@@ -282,6 +283,8 @@ def reconstruct_retro(
 
     # Pre-compute fully-sampled k-space RSS for display
     fs_kspace_rss = np.sqrt(np.sum(np.abs(full_kspace) ** 2, axis=2)).astype(np.float32)
+    # Export the acquired (fully sampled) k-space; the simulated mask is pe_mask.
+    exported = kspace_export(full_kspace)
 
     # Coil-combined recon methods (SENSE / CS-SENSE / ESPIRiT*) produce a
     # sensitivity-combined image, so compare them against a MATCHED
@@ -568,6 +571,7 @@ def reconstruct_retro(
             "swap_pe_read":     swap_pe_read,
             "rng_seed":         rng_seed,
         },
+        **exported,
     }
     if asm is not None:
         result.update(result_extras(asm))

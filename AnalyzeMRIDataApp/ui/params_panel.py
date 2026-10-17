@@ -647,12 +647,23 @@ class ParamsPanel(QWidget):
         self.chk_pdf.setChecked(False)
         self.chk_npy     = QCheckBox("Save combined images (.npy)")
         self.chk_npy.setChecked(False)
+        self.chk_kspace  = QCheckBox("Save raw k-space (.npy)")
+        self.chk_kspace.setChecked(False)
+        self.chk_kspace.setToolTip(
+            "Save each result's measured multi-coil k-space as <name>_kspace.npy:\n"
+            "complex, read × phase × coils on the full grid (never-acquired lines zero).\n"
+            "Non-Cartesian scans: readouts × samples × coils, plus <name>_trajectory.npy\n"
+            "with the (kx, ky) of every sample.\n"
+            "Applies to runs started while it is ticked (the k-space is kept in memory)."
+        )
         form_out.addRow(self.chk_pdf)
         form_out.addRow(self.chk_npy)
+        form_out.addRow(self.chk_kspace)
 
         self.btn_save_output = QPushButton("Save Output…")
         self.btn_save_output.setToolTip(
-            "Save the checked outputs — PDF report and/or .npy images — to a chosen location"
+            "Save the checked outputs — PDF report, .npy images and/or raw k-space —\n"
+            "to a chosen location"
         )
         self.btn_save_output.clicked.connect(self.save_output_requested.emit)
         form_out.addRow(self.btn_save_output)
@@ -727,6 +738,7 @@ class ParamsPanel(QWidget):
             self.edit_save_dir.setText(d)
         self.chk_pdf.setChecked(settings.value("output/gen_pdf", False, bool))
         self.chk_npy.setChecked(settings.value("output/save_npy", False, bool))
+        self.chk_kspace.setChecked(settings.value("output/save_kspace", False, bool))
         engine = settings.value("common/recon_backend", "", str)
         idx = self.combo_backend.findData(engine)
         if idx >= 0:
@@ -737,6 +749,7 @@ class ParamsPanel(QWidget):
         settings.setValue("output/save_dir", self.edit_save_dir.text())
         settings.setValue("output/gen_pdf", self.chk_pdf.isChecked())
         settings.setValue("output/save_npy", self.chk_npy.isChecked())
+        settings.setValue("output/save_kspace", self.chk_kspace.isChecked())
         settings.setValue("common/recon_backend", self.combo_backend.currentData())
         settings.setValue("pulseq/seq_library_dir", self.edit_seq_library.text())
 
@@ -799,4 +812,5 @@ class ParamsPanel(QWidget):
             "save_dir":     self.edit_save_dir.text(),
             "gen_pdf":      self.chk_pdf.isChecked(),
             "save_npy":     self.chk_npy.isChecked(),
+            "save_kspace":  self.chk_kspace.isChecked(),
         }

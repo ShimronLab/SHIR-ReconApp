@@ -54,6 +54,36 @@ def set_prewhitening(on: bool) -> None:
     PREWHITEN = bool(on)
 
 
+# Keep each result's measured multi-coil k-space so it can be saved as .npy.
+# Off by default: it is a complex (read, phase, coils) array per result. Set
+# per job from the parameters panel (Output → Save raw k-space).
+KEEP_KSPACE = False
+
+
+def set_keep_kspace(on: bool) -> None:
+    global KEEP_KSPACE
+    KEEP_KSPACE = bool(on)
+
+
+def kspace_export(kspace: Optional[np.ndarray],
+                  trajectory: Optional[np.ndarray] = None) -> Dict[str, Any]:
+    """
+    Result keys for the raw k-space export, or {} when it is switched off.
+
+    ``kspace`` is what the pipeline measured, before any reconstruction:
+    Cartesian (read, phase, coils) on the full grid with never-acquired lines
+    zero; non-Cartesian (readouts, samples, coils) with ``trajectory``
+    (readouts, samples, 2) = (kx, ky) of every sample, in the trajectory
+    file's units (1/m for Pulseq).
+    """
+    if not KEEP_KSPACE or kspace is None:
+        return {}
+    out = {"raw_kspace": np.array(kspace, dtype=np.complex64)}
+    if trajectory is not None:
+        out["raw_trajectory"] = np.array(trajectory, dtype=np.float32)
+    return out
+
+
 def noise_whitener(noise: np.ndarray) -> Tuple[np.ndarray, float]:
     """
     Coil whitening matrix from noise samples (n_samples, n_coils): W = L⁻¹ with
