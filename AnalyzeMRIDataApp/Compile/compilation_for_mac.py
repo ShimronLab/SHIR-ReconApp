@@ -108,6 +108,23 @@ EXCLUDES = [
 ]
 
 
+def _require_runtime_packages() -> None:
+    """
+    Abort if a package in COLLECT_ALL is not importable. PyInstaller's
+    collect_all bundles nothing for a missing package and the build still
+    succeeds, so the app would ship without it — e.g. without pypulseq, Pulseq
+    scans silently fall back from the played .seq to the trajectory file.
+    """
+    missing = [pkg for pkg in COLLECT_ALL
+               if pkg != "read_siemens_scans"            # found via TWIX_PARENT, not installed
+               and importlib.util.find_spec(pkg) is None]
+    if missing:
+        sys.exit(
+            f"ERROR: required package(s) not installed in this Python: {', '.join(missing)}.\n"
+            "Install the runtime requirements first:  pip install -r requirements.txt"
+        )
+
+
 def _preflight(allow_non_mac: bool) -> None:
     """Fail early with actionable messages if the environment is wrong."""
     if sys.platform != "darwin" and not allow_non_mac:
@@ -133,6 +150,7 @@ def _preflight(allow_non_mac: bool) -> None:
     if importlib.util.find_spec("PyInstaller") is None:
         sys.exit("ERROR: PyInstaller is not installed. Run: pip install pyinstaller")
 
+    _require_runtime_packages()
     for opt in ("torch", "ggrappa"):
         if importlib.util.find_spec(opt) is None:
             print(

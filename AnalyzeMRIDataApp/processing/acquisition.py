@@ -519,8 +519,9 @@ def acquire_pulseq(
             else:
                 geo = sg.json_line_geometry(path, ncol)
                 src, detail = Src.TRAJ_JSON, name
-        except ImportError:
-            emit("  [ACQ] pypulseq is not installed — the played .seq cannot be read.")
+        except ImportError as exc:
+            emit(f"  [ACQ] pypulseq could not be imported ({exc}) — the played .seq "
+                 "cannot be read.")
             continue
         except (OSError, ValueError, KeyError) as exc:
             emit(f"  [ACQ] {name}: {exc}")

@@ -181,7 +181,7 @@ def main() -> None:
         QGroupBox::title { subcontrol-origin: margin; left: 8px; }
         QToolBar { spacing: 4px; }
         QTabBar::tab { padding: 4px 10px; }
-        QTabBar::tab:selected { background: #2d9e4f; color: white; font-weight: bold; }
+        QTabBar::tab:selected { background: #2d9e4f; color: white; }
         QProgressBar { border: 1px solid #aaa; border-radius: 4px; height: 16px; }
         QProgressBar::chunk { background: #2d9e4f; }
     """)

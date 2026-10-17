@@ -40,6 +40,10 @@ build, which is the recommended one):
 pip install -r AnalyzeMRIDataApp/requirements.txt -r AnalyzeMRIDataApp/requirements-dev.txt
 ```
 
+The build stops with an error if any bundled runtime package (e.g. `pypulseq`) is
+missing from this Python. An env made before `pypulseq` was added to
+`requirements.txt` needs this install once, and then a rebuild.
+
 `requirements-dev.txt` includes `pyinstaller` and `pillow`. **torch and ggrappa
 are NOT needed for a `--no-torch` build** — skip them. Only if you want the
 optional `ggrappa` recon method in the bundle, also run (before building

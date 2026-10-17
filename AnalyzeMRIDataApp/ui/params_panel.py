@@ -55,7 +55,7 @@ class ParamsPanel(QWidget):
         outer.addWidget(scroll)
 
         # ── Common ────────────────────────────────────────────────────────────
-        grp_common = QGroupBox("Common (NUFFT gridding & engine)")
+        grp_common = QGroupBox("Common (NUFFT gridding && engine)")   # && = a literal & in Qt
         form_common = QFormLayout(grp_common)
 
         self.spin_grid = QSpinBox()
