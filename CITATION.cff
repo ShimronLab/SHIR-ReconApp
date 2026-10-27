@@ -12,9 +12,11 @@ abstract: >-
 authors:
   - given-names: Saar
     family-names: Drive
+    orcid: "https://orcid.org/0009-0003-8696-6454"
     affiliation: "Technion - Israel Institute of Technology"
   - given-names: Efrat
     family-names: Shimron
+    orcid: "https://orcid.org/0000-0002-2267-0561"
     affiliation: "Technion - Israel Institute of Technology"
 repository-code: "https://github.com/ShimronLab/SHIR-ReconApp"
 license: GPL-3.0-or-later
