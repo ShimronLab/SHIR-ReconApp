@@ -1,0 +1,30 @@
+cff-version: 1.2.0
+message: "If you use SHIR in your work, please cite it as below."
+type: software
+title: "SHIR: System for Hybrid Image Reconstruction"
+abstract: >-
+  An open-source desktop application that reconstructs raw MRI data (Siemens
+  TWIX .dat, from product and Pulseq sequences) into images, quality metrics,
+  PDF reports and NumPy arrays without programming. It reads k-space line
+  positions from the TWIX header or the played Pulseq .seq file, runs the same
+  pipelines on BART or SigPy with shared parameters, and simulates
+  undersampling of existing fully sampled scans.
+authors:
+  - given-names: Saar
+    family-names: Drive
+    affiliation: "Technion - Israel Institute of Technology"
+  - given-names: Efrat
+    family-names: Shimron
+    affiliation: "Technion - Israel Institute of Technology"
+repository-code: "https://github.com/ShimronLab/SHIR-ReconApp"
+license: GPL-3.0-or-later
+version: "1.0.0"
+date-released: "2026-10-28"
+keywords:
+  - MRI
+  - image reconstruction
+  - parallel imaging
+  - compressed sensing
+  - Pulseq
+  - BART
+  - SigPy
