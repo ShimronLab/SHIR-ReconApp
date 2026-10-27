@@ -14,6 +14,14 @@ equispaced GRAPPA / SENSE / CS-SENSE / ESPIRiT, non-Cartesian (band) and
 Poisson-disc compressed sensing, plus a retrospective under-sampling simulator.
 PDF reports are generated per scan folder, including **all coil sensitivity maps**.
 
+![SHIR workflow](docs/workflow.png)
+
+*SHIR workflow: raw multi-coil k-space is placed on its grid with geometry from the data
+(TWIX header and stored line indices, or the played Pulseq `.seq` file); one set of
+pipelines runs on either toolbox (BART or SigPy) with shared parameters; the
+undersampling simulator masks fully sampled k-space and reconstructs it without
+re-scanning; outputs are images, coil maps, metrics, PDF reports and NumPy arrays.*
+
 ---
 
 ## Repository layout
