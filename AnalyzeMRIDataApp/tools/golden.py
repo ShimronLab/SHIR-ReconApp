@@ -10,7 +10,9 @@ outputs, so another app version can be checked against them:
   compare  replay the stored cases (same jobs, same parameters) with another
            app checkout and diff the outputs.
 
-Run under WSL in the mri_toolkit env, for example:
+Set SHIR_SCANS_DIR to the folder holding the scan sessions listed in FOLDERS,
+and TOOLBOX_PATH to the BART folder (or MRI_BART_BIN to the bart binary). Then,
+for example under WSL:
 
   python tools/golden.py capture --app-root <baseline checkout> \
       --out <golden dir>/fdad7a9
@@ -31,9 +33,10 @@ import os
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 os.environ.setdefault("MPLBACKEND", "Agg")
 os.environ.setdefault("OMP_NUM_THREADS", "1")
-os.environ.setdefault("MRI_BART_BIN", "/opt/bart/bart")
-os.environ.setdefault("TOOLBOX_PATH", "/opt/bart")
-os.environ["PATH"] = "/opt/bart:" + os.environ.get("PATH", "")
+if os.environ.get("TOOLBOX_PATH"):
+    os.environ.setdefault("MRI_BART_BIN", os.path.join(os.environ["TOOLBOX_PATH"], "bart"))
+    os.environ["PATH"] = os.environ["TOOLBOX_PATH"] + os.pathsep + os.environ.get("PATH", "")
+os.environ.setdefault("MRI_BART_BIN", "bart")
 
 import argparse
 import hashlib
@@ -47,8 +50,7 @@ from pathlib import Path
 
 import numpy as np
 
-SCANS = Path("/path/to/"
-             "MRI_Acquisition_Reconstruction_Toolkit/scans")
+SCANS = Path(os.environ.get("SHIR_SCANS_DIR", "scans"))
 
 # dat_files folders to cover ("demo" duplicates SE_1mm and is left out).
 FOLDERS = [
@@ -188,6 +190,8 @@ def build_cases() -> list:
     from ui.folder_panel import _find_equispaced_json, _find_json
     from ui.main_window import _attach_references
 
+    if not SCANS.is_dir():
+        sys.exit(f"scan folder not found: {SCANS} (set SHIR_SCANS_DIR)")
     cases = []
     for rel in FOLDERS:
         folder = SCANS / rel

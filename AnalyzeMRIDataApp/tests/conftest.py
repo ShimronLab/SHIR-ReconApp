@@ -41,12 +41,9 @@ def _isolate_qsettings(tmp_path, monkeypatch):
     QSettings.setPath(QSettings.IniFormat, QSettings.UserScope, str(tmp_path))
     yield
 
-# Real sample data (user-provided phantom scans); tests marked `realdata` skip
-# when the folder is not present on the machine running the suite.
-SAMPLE_SCAN_DIR = Path(
-    "/path/to/"
-    "MRI_Acquisition_Reconstruction_Toolkit/scans/18_5_26/subject_100000_scan_200010"
-)
+# Real sample data (a scan folder with dat_files/); tests marked `realdata`
+# skip unless SHIR_SAMPLE_SCAN_DIR points to an existing folder.
+SAMPLE_SCAN_DIR = Path(os.environ.get("SHIR_SAMPLE_SCAN_DIR", "/nonexistent/shir-sample-scans"))
 
 
 def fft2c(img: np.ndarray) -> np.ndarray:

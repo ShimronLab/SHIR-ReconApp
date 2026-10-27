@@ -81,6 +81,8 @@ def main() -> int:
     from ui.folder_panel import _find_equispaced_json
     from ui.main_window import _attach_references
 
+    if not SCANS.is_dir():
+        sys.exit(f"scan folder not found: {SCANS} (set SHIR_SCANS_DIR)")
     report = []
     for rel in FOLDERS:
         folder = SCANS / rel
