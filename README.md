@@ -1,5 +1,7 @@
 # SHIR - System for Hybrid Image Reconstruction
 
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.23710493.svg)](https://doi.org/10.5281/zenodo.23710493)
+
 **SHIR** is a PyQt5 desktop application for multi-pipeline MRI reconstruction and
 visualisation of Siemens TWIX `.dat` files. It runs from source (Linux / WSL / macOS)
 and can be packaged as a standalone app for **Windows (`SHIR.exe`)** and
