@@ -32,16 +32,26 @@ re-scanning; outputs are images, coil maps, metrics, PDF reports and NumPy array
 SHIR-ReconApp/
 ├── AnalyzeMRIDataApp/        # the app (source folder name kept for stability)
 │   ├── app.py               # entry point
+│   ├── version.py           # app version (title bar, About dialog, build)
+│   ├── batch_report.py      # headless batch: JSON list of scans -> one PDF report
 │   ├── processing/          # reconstruction pipelines & backends (BART / sigpy)
 │   ├── ui/                  # PyQt5 windows, panels, report/PDF generator
 │   ├── Graphics/            # logo / splash
 │   ├── Compile/             # PyInstaller spec + build scripts & instructions
+│   ├── tests/               # pytest suite (unit, UI smoke, optional real-data tests)
+│   ├── tools/               # developer scripts (acquisition report, regression baselines)
 │   ├── testing/             # development notebooks (PE-mask comparison, …)
+│   ├── results/             # default output folder (empty in git)
 │   ├── requirements.txt     # pinned Python dependencies
 │   └── README.md            # full app documentation (usage, pipelines, params)
 ├── read_siemens_scans/      # TWIX (.dat) reader package - REQUIRED, imported by the app
 ├── ggrappa/                 # vendored optional dep for the "gGRAPPA (PyTorch)" option
-└── run_mri_app.bat          # Windows launcher (WSL + conda)
+├── docs/                    # images used by this README
+├── DemoData/                # NOT in git: download from the release (see "Demo data" below)
+├── run_mri_app.bat          # Windows launcher (WSL + conda)
+├── CITATION.cff             # citation metadata (Zenodo DOI)
+├── LICENSE                  # GPL-3.0
+└── THIRD_PARTY_LICENSES.md
 ```
 
 > `read_siemens_scans/` must remain a **sibling** of `AnalyzeMRIDataApp/` - the app
@@ -99,6 +109,36 @@ conda env).
 
 To build a standalone executable, see
 [`AnalyzeMRIDataApp/Compile/compilation_instruction.md`](AnalyzeMRIDataApp/Compile/compilation_instruction.md).
+
+---
+
+## Demo data
+
+A demo scan session is attached to the v1.0.0 release:
+**[SHIR_DemoData.zip](https://github.com/ShimronLab/SHIR-ReconApp/releases/download/v1.0.0/SHIR_DemoData.zip)**
+(164 MB zipped, 265 MB unzipped). It is not stored in the repository, because raw
+scans would make every clone that large.
+
+It holds one volunteer brain session: Pulseq T2-weighted TSE scans acquired on a
+3T Siemens Prisma under IRB approval. All identifying header fields (name, ID,
+birth date, age, sex, height, weight, institution, device serial) have been blanked.
+
+```
+DemoData/
+├── dat_files/                   # Siemens TWIX raw data
+│   ├── …_fully_sampled_tse_t2.dat        # fully sampled reference
+│   ├── …_equispaced_R2_acs24_tse_t2.dat  # equispaced, R=2, 24 calibration lines
+│   ├── …_PoissonDisc_tse_t2.dat          # Poisson-disc (compressed sensing)
+│   └── …_band_tse_0.dat, …_band_tse_6.dat # non-Cartesian bands
+├── seq_files/                   # the played Pulseq .seq file for each scan
+├── FullySampled_tse_t2.json     # trajectory files used by the pipelines
+├── Undersampled2equispaces.json
+├── PoissonDisc.json
+└── Bands.json
+```
+
+Unzip it anywhere and open the `DemoData` folder in SHIR. Every pipeline can be
+tried on it, including the undersampling simulator on the fully sampled scan.
 
 ---
 

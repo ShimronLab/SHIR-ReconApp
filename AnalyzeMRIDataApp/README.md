@@ -706,7 +706,10 @@ To share the app with other groups:
 4. **Demo data** goes on the same Release as a separate zip asset (up to 2 GB per file), not
    into the repository: a single TWIX file is typically 200–300 MB, over GitHub's 100 MB
    per-file limit, and `*.dat` is git-ignored. Include the protocol PDF, and the `.seq` files for
-   Pulseq scans, and link the asset from this README.
+   Pulseq scans, and link the asset from this README. The v1.0.0 demo set is linked from
+   the [top-level README](../README.md#demo-data).
+5. Releases are archived on **Zenodo** automatically (DOI
+   [10.5281/zenodo.23710493](https://doi.org/10.5281/zenodo.23710493), always the latest version).
 
 Further options worth considering for wider distribution (not yet set up):
 
@@ -714,8 +717,6 @@ Further options worth considering for wider distribution (not yet set up):
   tag — this also sidesteps the "build outside OneDrive" restriction entirely.
 - An **Inno Setup** installer wrapping the onedir folder (Start-menu shortcut
   with the logo, optional WSL check).
-- A **Zenodo** DOI on the tagged release, plus a small anonymised demo `.dat`
-  (+ trajectory JSON) so recipients can validate their WSL/BART setup.
 - **Licensing is settled**: SHIR is released under **GPL-3.0**
   (Copyright © 2026 Saar Drive, Shimron Lab, Technion) — see the repository
   [`LICENSE`](../LICENSE) and [`THIRD_PARTY_LICENSES.md`](../THIRD_PARTY_LICENSES.md).
